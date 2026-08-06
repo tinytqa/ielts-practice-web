@@ -1,0 +1,6 @@
+{
+  "name": "IELTS Master AI - Website Luyện Thi IELTS",
+  "description": "Website luyện thi IELTS toàn diện tích hợp AI chấm bài Writing & Speaking, ngân hàng đề Reading/Listening, Error Notebook, Gamification và Cộng đồng.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
