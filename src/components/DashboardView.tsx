@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Target, Award, Calendar, Clock, BookOpen, Edit3, Mic, Brain, AlertTriangle, ArrowRight, CheckCircle2, RefreshCw, Sparkles, ExternalLink, Check, Zap, AlertCircle, ShieldCheck } from 'lucide-react';
+import { Target, Award, Calendar, Clock, BookOpen, Edit3, Mic, Brain, AlertTriangle, ArrowRight, CheckCircle2, RefreshCw, Sparkles, ExternalLink, Check, Zap, AlertCircle, ShieldCheck, FileText, Table, Video, Folder } from 'lucide-react';
 import { UserProfile, UserStats } from '../types';
 import { initAuth, googleSignIn, getCurrentUser, logoutGoogle } from '../lib/firebaseAuth';
 import { syncMultipleEventsToCalendar, StudySessionEvent } from '../lib/googleCalendar';
+import { createIeltsDocInGoogleDocs, createVocabSheetInGoogleSheets, listGoogleDriveFiles, createGoogleMeetSpace } from '../lib/googleWorkspace';
 
 interface DashboardViewProps {
   stats: UserStats | null;
@@ -36,6 +37,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [generatedSessions, setGeneratedSessions] = useState<StudySessionEvent[]>([]);
   const [scheduleOverview, setScheduleOverview] = useState<string>('');
   const [syncSuccessMsg, setSyncSuccessMsg] = useState<string | null>(null);
+
+  // Workspace Actions State
+  const [isExportingDoc, setIsExportingDoc] = useState(false);
+  const [exportedDocUrl, setExportedDocUrl] = useState<string | null>(null);
+  const [isExportingSheet, setIsExportingSheet] = useState(false);
+  const [exportedSheetUrl, setExportedSheetUrl] = useState<string | null>(null);
+  const [isCreatingMeet, setIsCreatingMeet] = useState(false);
+  const [createdMeetUri, setCreatedMeetUri] = useState<string | null>(null);
+  const [driveFiles, setDriveFiles] = useState<any[]>([]);
+  const [isLoadingDrive, setIsLoadingDrive] = useState(false);
 
   // Initialize Auth state
   useEffect(() => {
@@ -152,6 +163,93 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       alert(`Đồng bộ thất bại: ${err.message}`);
     } finally {
       setIsSyncingCalendar(false);
+    }
+  };
+
+  // Export Study Plan to Google Docs
+  const handleExportDoc = async () => {
+    if (!calendarToken) {
+      handleConnectGoogle();
+      return;
+    }
+    setIsExportingDoc(true);
+    setExportedDocUrl(null);
+    try {
+      const docTitle = `IELTS AI - Lộ Trình Học Cá Nhân Hóa (${currentBand} -> ${targetBand} Band)`;
+      const contentText = `HỌC VIÊN: ${calendarUser?.email || 'N/A'}\nMỤC TIÊU: ${targetBand} Band (Ngày thi: ${targetDate})\nTHỜI GIAN HỌC: ${weeklyHours} giờ/tuần\n\nTỔNG QUAN LỘ TRÌNH:\n${scheduleOverview}\n\nDANH SÁCH BÀI HỌC VÀ LỊCH LỆNH:\n` +
+        generatedSessions.map((s, idx) => `${idx + 1}. [${s.skill}] ${s.summary}\n   Thời gian: ${new Date(s.start_time).toLocaleString('vi-VN')}\n   Hướng dẫn: ${s.description}\n`).join('\n');
+
+      const res = await createIeltsDocInGoogleDocs(calendarToken, docTitle, contentText);
+      setExportedDocUrl(res.url);
+    } catch (err: any) {
+      alert(`Lỗi tạo Google Doc: ${err.message}`);
+    } finally {
+      setIsExportingDoc(false);
+    }
+  };
+
+  // Export Study Schedule to Google Sheets
+  const handleExportSheet = async () => {
+    if (!calendarToken) {
+      handleConnectGoogle();
+      return;
+    }
+    setIsExportingSheet(true);
+    setExportedSheetUrl(null);
+    try {
+      const sheetTitle = `IELTS AI Master - Bảng Lịch Học & Mục Tiêu`;
+      const rows = [
+        ['Buổi #', 'Kỹ năng', 'Tên buổi học', 'Bắt đầu', 'Kết thúc', 'Chi tiết hướng dẫn'],
+        ...generatedSessions.map((s, idx) => [
+          `Buổi ${idx + 1}`,
+          s.skill,
+          s.summary,
+          new Date(s.start_time).toLocaleString('vi-VN'),
+          new Date(s.end_time).toLocaleString('vi-VN'),
+          s.description
+        ])
+      ];
+
+      const res = await createVocabSheetInGoogleSheets(calendarToken, sheetTitle, rows);
+      setExportedSheetUrl(res.url);
+    } catch (err: any) {
+      alert(`Lỗi tạo Google Sheet: ${err.message}`);
+    } finally {
+      setIsExportingSheet(false);
+    }
+  };
+
+  // Create Google Meet Room for Speaking Practice
+  const handleCreateMeetSpace = async () => {
+    if (!calendarToken) {
+      handleConnectGoogle();
+      return;
+    }
+    setIsCreatingMeet(true);
+    try {
+      const res = await createGoogleMeetSpace(calendarToken);
+      setCreatedMeetUri(res.meetingUri);
+    } catch (err: any) {
+      alert(`Lỗi tạo phòng họp Google Meet: ${err.message}`);
+    } finally {
+      setIsCreatingMeet(false);
+    }
+  };
+
+  // List Google Drive Files
+  const handleListDriveFiles = async () => {
+    if (!calendarToken) {
+      handleConnectGoogle();
+      return;
+    }
+    setIsLoadingDrive(true);
+    try {
+      const files = await listGoogleDriveFiles(calendarToken);
+      setDriveFiles(files);
+    } catch (err: any) {
+      alert(`Lỗi xem tập tin Google Drive: ${err.message}`);
+    } finally {
+      setIsLoadingDrive(false);
     }
   };
 
@@ -484,6 +582,183 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   <Brain className="w-4 h-4 text-emerald-900" />
                   <span>Sinh Lộ Trình Lịch Học AI</span>
                 </button>
+              </div>
+            )}
+          </div>
+
+          {/* Google Workspace Integration Hub (Docs, Sheets, Drive, Meet) */}
+          <div className="bg-white border border-emerald-100 rounded-3xl p-5 shadow-xs space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-[#E8F8E8] border border-[#BDE8BD] flex items-center justify-center shrink-0">
+                  <ExternalLink className="w-4 h-4 text-emerald-800" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm text-slate-900">Google Workspace Hub</h3>
+                  <p className="text-[11px] text-slate-500">Đồng bộ lộ trình & ôn luyện trực tiếp với Google Apps</p>
+                </div>
+              </div>
+              {!calendarUser ? (
+                <button
+                  onClick={handleConnectGoogle}
+                  className="bg-[#C7F3C7] hover:bg-[#b2ebb2] text-emerald-950 border border-[#A5E0A5] px-3 py-1.5 rounded-xl text-xs font-black transition cursor-pointer shadow-2xs"
+                >
+                  Kết Nối Google
+                </button>
+              ) : (
+                <span className="text-[10px] font-bold text-emerald-900 bg-[#E8F8E8] px-2.5 py-1 rounded-full border border-[#BDE8BD]">
+                  ✓ {calendarUser.email}
+                </span>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+              {/* Google Docs */}
+              <div className="bg-slate-50/80 border border-slate-200/80 rounded-2xl p-3.5 space-y-2 flex flex-col justify-between">
+                <div>
+                  <div className="flex items-center gap-2 text-blue-700 font-extrabold text-xs mb-1">
+                    <FileText className="w-4 h-4 text-blue-600" />
+                    <span>Google Docs</span>
+                  </div>
+                  <p className="text-[11px] text-slate-600 leading-snug">
+                    Xuất toàn bộ Lộ trình học & Nhận xét Writing sang Google Doc.
+                  </p>
+                </div>
+                {exportedDocUrl ? (
+                  <a
+                    href={exportedDocUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="w-full mt-2 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs py-1.5 px-3 rounded-xl transition inline-flex items-center justify-center gap-1.5"
+                  >
+                    <span>Mở Google Doc</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                ) : (
+                  <button
+                    onClick={handleExportDoc}
+                    disabled={isExportingDoc}
+                    className="w-full mt-2 bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-200 font-bold text-xs py-1.5 px-3 rounded-xl transition cursor-pointer flex items-center justify-center gap-1.5"
+                  >
+                    {isExportingDoc ? <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-700" /> : <FileText className="w-3.5 h-3.5 text-blue-700" />}
+                    <span>Xuất Sang Docs</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Google Sheets */}
+              <div className="bg-slate-50/80 border border-slate-200/80 rounded-2xl p-3.5 space-y-2 flex flex-col justify-between">
+                <div>
+                  <div className="flex items-center gap-2 text-emerald-700 font-extrabold text-xs mb-1">
+                    <Table className="w-4 h-4 text-emerald-600" />
+                    <span>Google Sheets</span>
+                  </div>
+                  <p className="text-[11px] text-slate-600 leading-snug">
+                    Xuất danh sách Lịch học & Bảng Từ vựng sang Bảng tính.
+                  </p>
+                </div>
+                {exportedSheetUrl ? (
+                  <a
+                    href={exportedSheetUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="w-full mt-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs py-1.5 px-3 rounded-xl transition inline-flex items-center justify-center gap-1.5"
+                  >
+                    <span>Mở Google Sheet</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                ) : (
+                  <button
+                    onClick={handleExportSheet}
+                    disabled={isExportingSheet}
+                    className="w-full mt-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 font-bold text-xs py-1.5 px-3 rounded-xl transition cursor-pointer flex items-center justify-center gap-1.5"
+                  >
+                    {isExportingSheet ? <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-700" /> : <Table className="w-3.5 h-3.5 text-emerald-700" />}
+                    <span>Xuất Sang Sheets</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Google Meet */}
+              <div className="bg-slate-50/80 border border-slate-200/80 rounded-2xl p-3.5 space-y-2 flex flex-col justify-between">
+                <div>
+                  <div className="flex items-center gap-2 text-rose-700 font-extrabold text-xs mb-1">
+                    <Video className="w-4 h-4 text-rose-600" />
+                    <span>Google Meet</span>
+                  </div>
+                  <p className="text-[11px] text-slate-600 leading-snug">
+                    Tạo phòng họp Google Meet trực tiếp để Luyện Speaking 1-on-1.
+                  </p>
+                </div>
+                {createdMeetUri ? (
+                  <a
+                    href={createdMeetUri}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="w-full mt-2 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs py-1.5 px-3 rounded-xl transition inline-flex items-center justify-center gap-1.5"
+                  >
+                    <span>Vào Phòng Meet</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                ) : (
+                  <button
+                    onClick={handleCreateMeetSpace}
+                    disabled={isCreatingMeet}
+                    className="w-full mt-2 bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-200 font-bold text-xs py-1.5 px-3 rounded-xl transition cursor-pointer flex items-center justify-center gap-1.5"
+                  >
+                    {isCreatingMeet ? <RefreshCw className="w-3.5 h-3.5 animate-spin text-rose-700" /> : <Video className="w-3.5 h-3.5 text-rose-700" />}
+                    <span>Tạo Phòng Meet</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Google Drive */}
+              <div className="bg-slate-50/80 border border-slate-200/80 rounded-2xl p-3.5 space-y-2 flex flex-col justify-between">
+                <div>
+                  <div className="flex items-center gap-2 text-amber-700 font-extrabold text-xs mb-1">
+                    <Folder className="w-4 h-4 text-amber-600" />
+                    <span>Google Drive</span>
+                  </div>
+                  <p className="text-[11px] text-slate-600 leading-snug">
+                    Xem và quản lý các tập tin tài liệu IELTS trên Drive của bạn.
+                  </p>
+                </div>
+                <button
+                  onClick={handleListDriveFiles}
+                  disabled={isLoadingDrive}
+                  className="w-full mt-2 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 font-bold text-xs py-1.5 px-3 rounded-xl transition cursor-pointer flex items-center justify-center gap-1.5"
+                >
+                  {isLoadingDrive ? <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-700" /> : <Folder className="w-3.5 h-3.5 text-amber-700" />}
+                  <span>Duyệt Tập Tin Drive</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Google Drive File List Modal / Drawer */}
+            {driveFiles.length > 0 && (
+              <div className="mt-3 bg-slate-50 border border-slate-200 rounded-2xl p-3 space-y-2 text-xs">
+                <div className="flex items-center justify-between font-extrabold text-slate-800 border-b border-slate-200 pb-1.5">
+                  <span className="flex items-center gap-1.5 text-amber-800"><Folder className="w-4 h-4" /> Tập Tin Gần Đây Trên Google Drive</span>
+                  <button onClick={() => setDriveFiles([])} className="text-slate-400 hover:text-slate-700">✕ Đóng</button>
+                </div>
+                <div className="space-y-1.5 max-h-40 overflow-y-auto">
+                  {driveFiles.map((file) => (
+                    <div key={file.id} className="flex items-center justify-between bg-white p-2 rounded-xl border border-slate-100">
+                      <span className="font-medium text-slate-800 truncate max-w-[240px]">{file.name}</span>
+                      {file.webViewLink && (
+                        <a
+                          href={file.webViewLink}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-emerald-800 font-bold hover:underline text-[11px] flex items-center gap-1"
+                        >
+                          <span>Mở</span>
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      )}
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
           </div>
