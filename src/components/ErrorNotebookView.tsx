@@ -29,9 +29,9 @@ export const ErrorNotebookView: React.FC = () => {
   return (
     <div className="space-y-6">
       {/* Top Banner */}
-      <div className="bg-white border border-slate-200 rounded-3xl p-5 shadow-xs">
+      <div className="bg-white border border-slate-200/80 rounded-3xl p-5 shadow-sm">
         <div className="flex items-center gap-3 mb-2">
-          <div className="p-2.5 rounded-2xl bg-emerald-50 text-emerald-600 border border-emerald-100">
+          <div className="p-2.5 rounded-2xl bg-emerald-50 text-emerald-700 border border-emerald-200">
             <AlertCircle className="w-6 h-6" />
           </div>
           <div>
@@ -46,8 +46,8 @@ export const ErrorNotebookView: React.FC = () => {
         <div className="mt-3 pt-3 border-t border-slate-100 flex flex-wrap gap-2">
           <button
             onClick={() => setSelectedTagFilter('ALL')}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold cursor-pointer transition ${
-              selectedTagFilter === 'ALL' ? 'bg-[#C7F3C7] text-emerald-950 font-black border border-[#A5E0A5] shadow-2xs' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+            className={`px-3.5 py-1.5 rounded-xl text-xs cursor-pointer transition ${
+              selectedTagFilter === 'ALL' ? 'btn-glossy-emerald font-extrabold text-white' : 'btn-glossy-dark font-medium text-slate-700'
             }`}
           >
             Tất Cả Lỗi ({errors.length})
@@ -56,8 +56,8 @@ export const ErrorNotebookView: React.FC = () => {
             <button
               key={fe.code}
               onClick={() => setSelectedTagFilter(fe.code)}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold cursor-pointer transition ${
-                selectedTagFilter === fe.code ? 'bg-[#C7F3C7] text-emerald-950 font-black border border-[#A5E0A5] shadow-2xs' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              className={`px-3.5 py-1.5 rounded-xl text-xs cursor-pointer transition ${
+                selectedTagFilter === fe.code ? 'btn-glossy-emerald font-extrabold text-white' : 'btn-glossy-dark font-medium text-slate-700'
               }`}
             >
               {fe.name} ({fe.count})
@@ -70,13 +70,13 @@ export const ErrorNotebookView: React.FC = () => {
       <div className="space-y-4">
         {filteredErrors.length > 0 ? (
           filteredErrors.map((err: any) => (
-            <div key={err.id} className="bg-white border border-slate-200 rounded-3xl p-5 space-y-3 shadow-xs">
+            <div key={err.id} className="bg-white border border-slate-200/80 rounded-3xl p-5 space-y-3 shadow-sm">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <span className="px-2.5 py-0.5 rounded-md text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-200">
+                  <span className="px-2.5 py-0.5 rounded-md text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200">
                     [{err.error_tag_code}] {err.error_tag_name}
                   </span>
-                  <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-slate-100 text-slate-600">
+                  <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200">
                     Source: {err.source_type}
                   </span>
                 </div>
@@ -90,15 +90,15 @@ export const ErrorNotebookView: React.FC = () => {
                 <p className="text-slate-800 font-medium">
                   Corrected: <strong className="text-emerald-700 font-bold">{err.corrected_text}</strong>
                 </p>
-                <p className="text-slate-600 text-[11px] pt-1"><strong className="text-indigo-700 font-bold">Explanation:</strong> {err.explanation}</p>
+                <p className="text-slate-600 text-[11px] pt-1"><strong className="text-emerald-800 font-bold">Explanation:</strong> {err.explanation}</p>
               </div>
             </div>
           ))
         ) : (
-          <div className="bg-white border border-slate-200 rounded-3xl p-12 text-center text-slate-500 text-xs space-y-2 shadow-xs">
+          <div className="bg-white border border-slate-200/80 rounded-3xl p-12 text-center text-slate-500 text-xs space-y-2 shadow-sm">
             <CheckCircle2 className="w-10 h-10 text-emerald-600 mx-auto" />
-            <p className="text-sm font-bold text-slate-800">No errors match the selected filter</p>
-            <p>Whenever you take tests or evaluate work with AI, detected errors will automatically appear here.</p>
+            <p className="text-sm font-bold text-slate-900">No errors match the selected filter</p>
+            <p className="text-slate-500">Whenever you take tests or evaluate work with AI, detected errors will automatically appear here.</p>
           </div>
         )}
       </div>
