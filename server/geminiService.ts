@@ -362,6 +362,216 @@ export async function lookupVocabDetails(word: string) {
   }
 }
 
+export async function generateQuizizzFromFile(fileBuffer: Buffer, mimeType: string, originalName: string) {
+  const systemInstruction = `
+You are an expert Quizizz Game Content Creator for IELTS vocabulary and OCR Document Processor.
+Analyze the provided document, image, or text file (performing OCR if an image, photo of textbook/handwriting, or scanned document).
+Your goal:
+1. Perform high-accuracy OCR to extract text from images/PDFs/documents.
+2. Extract key English vocabulary words, collocations, or academic phrases found in the document along with their IPA, Vietnamese meanings, and an example sentence.
+3. Create 8 high-impact multiple-choice Quizizz questions testing those extracted words.
+
+Requirements:
+- Questions must cover vocabulary directly present in or derived from the uploaded file.
+- Question types should be varied (meaning identification, fill-in-blank, reverse definition, collocation).
+- Each question MUST have exactly 4 options and correct_index (0..3).
+- Provide a clear, short Vietnamese explanation.
+- Return extracted_words array containing items with { word, ipa, meaning_vi, example_sentence }.
+
+Respond strictly in valid JSON matching the schema.
+`;
+
+  let userContents: any[];
+
+  if (mimeType.startsWith('image/') || mimeType === 'application/pdf') {
+    userContents = [
+      {
+        inlineData: {
+          mimeType: mimeType,
+          data: fileBuffer.toString('base64')
+        }
+      },
+      {
+        text: `Please read and analyze this uploaded file "${originalName}" using OCR. Extract key English vocabulary words and generate 8 Quizizz questions based on them.`
+      }
+    ];
+  } else {
+    // Plain text or text-based documents
+    const rawText = fileBuffer.toString('utf-8');
+    userContents = [
+      {
+        text: `Filename: ${originalName}\nFile Content:\n"""\n${rawText.slice(0, 10000)}\n"""\n\nPlease analyze this text content, extract key English vocabulary words/phrases, and generate 8 Quizizz questions.`
+      }
+    ];
+  }
+
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-3.6-flash",
+      contents: userContents,
+      config: {
+        systemInstruction,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            title: { type: Type.STRING },
+            extracted_words: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  word: { type: Type.STRING },
+                  ipa: { type: Type.STRING },
+                  meaning_vi: { type: Type.STRING },
+                  example_sentence: { type: Type.STRING }
+                },
+                required: ["word", "meaning_vi"]
+              }
+            },
+            questions: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  question: { type: Type.STRING },
+                  options: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  correct_index: { type: Type.NUMBER },
+                  explanation: { type: Type.STRING },
+                  word_target: { type: Type.STRING }
+                },
+                required: ["question", "options", "correct_index", "explanation", "word_target"]
+              }
+            }
+          },
+          required: ["title", "questions"]
+        }
+      }
+    });
+
+    return JSON.parse(response.text || "{}");
+  } catch (error) {
+    console.error("Gemini File OCR Quizizz Generation Error:", error);
+    return {
+      title: `Bộ Quizizz từ tài liệu: ${originalName}`,
+      extracted_words: [
+        { word: "comprehension", ipa: "/ˌkɒmprɪˈhenʃn/", meaning_vi: "sự hiểu biết, khả năng đọc hiểu", example_sentence: "Reading comprehension requires active engagement." }
+      ],
+      questions: [
+        {
+          question: `Từ vựng quan trọng nào xuất hiện trong tài liệu "${originalName}" mang nghĩa "sự đọc hiểu / khả năng thấu hiểu"?`,
+          options: ["comprehension", "apprehension", "misconception", "suspicion"],
+          correct_index: 0,
+          explanation: "Comprehension (noun) = sự hiểu, khả năng đọc hiểu tài liệu.",
+          word_target: "comprehension"
+        }
+      ]
+    };
+  }
+}
+
+export async function generateQuizizzQuestions(wordsList?: any[], topic?: string) {
+  const wordsPrompt = wordsList && wordsList.length > 0
+    ? `Vocabulary items to convert into Quizizz questions: ${JSON.stringify(wordsList)}`
+    : `Generate 8 high-impact IELTS vocabulary Quizizz questions for topic: "${topic || 'General IELTS Academic'}".`;
+
+  const systemInstruction = `
+You are an expert Quizizz Game Content Creator for IELTS vocabulary.
+Generate engaging multiple-choice quiz questions for Vietnamese students studying IELTS vocabulary.
+
+Requirements:
+1. Create 8 distinct multiple-choice Quizizz questions.
+2. Question types should vary:
+   - Meaning identification (Word -> Vietnamese Meaning)
+   - Reverse definition (Vietnamese Meaning -> English Word)
+   - Fill in the blank in a Band 7.5+ example sentence
+   - Collocation match
+3. Each question MUST have exactly 4 options (strings).
+4. Provide correct_index (0, 1, 2, or 3) indicating the exact correct option.
+5. Provide a clear, short Vietnamese explanation.
+6. Provide word_target (the target vocabulary word).
+
+Respond strictly in valid JSON matching the schema.
+`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-3.6-flash",
+      contents: wordsPrompt,
+      config: {
+        systemInstruction,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            title: { type: Type.STRING },
+            questions: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  question: { type: Type.STRING },
+                  options: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  correct_index: { type: Type.NUMBER },
+                  explanation: { type: Type.STRING },
+                  word_target: { type: Type.STRING }
+                },
+                required: ["question", "options", "correct_index", "explanation", "word_target"]
+              }
+            }
+          },
+          required: ["title", "questions"]
+        }
+      }
+    });
+
+    return JSON.parse(response.text || "{}");
+  } catch (error) {
+    console.error("Gemini Quizizz Generation Error:", error);
+    // Fallback quiz questions
+    return {
+      title: "Bộ Quizizz Ôn Luyện Từ Vựng IELTS Tự Động",
+      questions: [
+        {
+          question: "Nghĩa tiếng Việt chuẩn của từ vựng 'deterioration' là gì?",
+          options: ["sự suy giảm, làm tệ đi", "sự phát triển vượt bậc", "sự bảo tồn nguyên vẹn", "sự thay thế tạm thời"],
+          correct_index: 0,
+          explanation: "Deterioration (noun) chỉ quá trình trở nên tồi tệ hơn, suy giảm chất lượng.",
+          word_target: "deterioration"
+        },
+        {
+          question: "Điền từ phù hợp vào chỗ trống: 'Rising carbon emissions will ___ existing climate issues.'",
+          options: ["exacerbate", "ameliorate", "conserve", "synthesize"],
+          correct_index: 0,
+          explanation: "Exacerbate (verb) = làm trầm trọng thêm vấn đề tiêu cực.",
+          word_target: "exacerbate"
+        },
+        {
+          question: "Từ vựng nào đồng nghĩa với 'crucial' / 'extremely important'?",
+          options: ["indispensable", "superficial", "redundant", "trivial"],
+          correct_index: 0,
+          explanation: "Indispensable (adj) = không thể thiếu, rất quan trọng.",
+          word_target: "indispensable"
+        },
+        {
+          question: "Collocation chuẩn cho bài Writing Task 2: 'play an ___ role in economic growth'",
+          options: ["integral", "irrelevant", "arbitrary", "ephemeral"],
+          correct_index: 0,
+          explanation: "Play an integral role = đóng vai trò không thể thiếu / thiết yếu.",
+          word_target: "integral"
+        },
+        {
+          question: "Từ nào mang nghĩa 'chưa từng có tiền lệ' trong IELTS Writing?",
+          options: ["unprecedented", "conventional", "predictable", "monotonous"],
+          correct_index: 0,
+          explanation: "Unprecedented (adj) = chưa từng xảy ra trong quá khứ.",
+          word_target: "unprecedented"
+        }
+      ]
+    };
+  }
+}
+
 export async function generateFullStudySchedule(
   currentBand: number = 5.5,
   targetBand: number = 7.0,

@@ -358,12 +358,23 @@ function seedInitialData(database: Database) {
       ('art_2', 'u_teacher', 'Top 10 Collocations ăn điểm Band 7.5+ cho Writing Task 2 Topic Technology', 'WRITING', 'Thay vì dùng "modern technology", bạn có thể nâng cấp thành "cutting-edge technology" hoặc "state-of-the-art innovations".\nThay vì "change the world", dùng "revolutionize daily living"...', '["et_4", "vocab_collocation", "et_3"]', 'APPROVED');
     `);
 
+    // Seed Writing & Speaking Submissions
+    database.run(`
+      INSERT INTO writing_submissions (id, user_id, task_type, prompt_title, essay_text, word_count, status) VALUES
+      ('sub_w1', 'u_student', 'TASK_2', 'Writing Task 2: AI Automation & Future Jobs', 'In recent years, artificial intelligence progressed rapidly. Students usually make homework late at night...', 260, 'COMPLETED');
+
+      INSERT INTO speaking_submissions (id, user_id, part, prompt_title, audio_url, transcript, status) VALUES
+      ('sub_s1', 'u_student', 'PART_2', 'Speaking Part 2: Describe a Memorable Journey', '', 'The ENVIRONMENT is facing severe pollution...', 'COMPLETED');
+    `);
+
     // Seed Sample Error Notebook Entries for Student
     database.run(`
       INSERT INTO error_instances (id, user_id, error_tag_id, source_type, source_id, original_text, corrected_text, explanation) VALUES
       ('err_1', 'u_student', 'et_1', 'WRITING', 'sub_w1', 'In recent years, artificial intelligence progressed rapidly.', 'In recent years, artificial intelligence HAS PROGRESSED rapidly.', 'Cụm từ "In recent years" biểu thị hành động diễn ra từ quá khứ đến hiện tại -> Phải dùng thì Hiện tại hoàn thành (has progressed).'),
       ('err_2', 'u_student', 'et_4', 'WRITING', 'sub_w1', 'Students usually make homework late at night.', 'Students usually DO homework late at night.', 'Collocation chuẩn trong tiếng Anh là "do homework", không dùng "make homework".'),
-      ('err_3', 'u_student', 'et_6', 'SPEAKING', 'sub_s1', 'The ENVIRONMENT is facing severe pollution.', 'en-VI-ron-ment (trọng âm rơi vào âm tiết thứ 2: /ɪnˈvaɪ.rən.mənt/)', 'Phát âm sai trọng âm từ environment thành /en-vi-ron-ment/ khiến người nghe khó hiểu.');
+      ('err_3', 'u_student', 'et_6', 'SPEAKING', 'sub_s1', 'The ENVIRONMENT is facing severe pollution.', 'en-VI-ron-ment (trọng âm rơi vào âm tiết thứ 2: /ɪnˈvaɪ.rən.mənt/)', 'Phát âm sai trọng âm từ environment thành /en-vi-ron-ment/ khiến người nghe khó hiểu.'),
+      ('err_4', 'u_student', 'et_5', 'READING', 'test_r1', 'Corals die instantly as soon as bleaching occurs (Bạn chọn: TRUE)', 'Đáp án đúng: FALSE', 'Đoạn 1 ghi rõ: "While bleached corals are not immediately dead, they are under extreme stress..." -> San hô không chết ngay lập tức.'),
+      ('err_5', 'u_student', 'et_2', 'LISTENING', 'test_l1', 'Building C, Room 304 (Nhầm lẫn số báo danh học viên)', 'Đáp án đúng: ST-88291', 'Nhầm lẫn nghe chép chính tả số báo danh học viên và địa điểm phòng học trong đoạn hội thoại.');
     `);
 
     // Seed Vocab Notebook

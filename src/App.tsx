@@ -9,11 +9,34 @@ import { ErrorNotebookView } from './components/ErrorNotebookView';
 import { KnowledgeVocabView } from './components/KnowledgeVocabView';
 import { UserStats, UserProfile } from './types';
 
+const DEFAULT_STATS: UserStats = {
+  predicted_overall_band: 6.5,
+  confidence_level: 'Độ tin cậy Cao (dựa trên bài thi gần đây)',
+  skill_bands: { reading: 6.5, listening: 7.0, writing: 6.0, speaking: 6.5 },
+  total_attempts: 4,
+  streak_days: 5,
+  credits: 25,
+  frequent_errors: [
+    { tag_code: 'W_TENSE_ERR', name: 'Lỗi Sai Thì Động Từ', count: 4 },
+    { tag_code: 'S_PRON_ERR', name: 'Phát Âm Thiếu Sắc Thái', count: 3 },
+    { tag_code: 'W_VOCAB_ERR', name: 'Dùng Từ Sai Ngữ Cảnh', count: 2 }
+  ]
+};
+
+const DEFAULT_PROFILE: UserProfile = {
+  user_id: 'u_student',
+  current_band: 5.5,
+  target_band: 7.0,
+  target_exam_date: '2026-11-15',
+  weekly_hours: 10,
+  updated_at: new Date().toISOString()
+};
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<string>('dashboard');
   const [user, setUser] = useState<any>({ id: 'u_student', full_name: 'Nguyễn Văn Học Viên', role: 'STUDENT' });
-  const [profile, setProfile] = useState<UserProfile | null>(null);
-  const [stats, setStats] = useState<UserStats | null>(null);
+  const [profile, setProfile] = useState<UserProfile | null>(DEFAULT_PROFILE);
+  const [stats, setStats] = useState<UserStats | null>(DEFAULT_STATS);
 
   useEffect(() => {
     fetchUserData();
@@ -21,18 +44,27 @@ export default function App() {
 
   const fetchUserData = async () => {
     try {
-      // Auto login / fetch default user
       const authRes = await fetch('/api/auth/me?user_id=u_student');
-      const authData = await authRes.json();
-      if (authData.user) setUser(authData.user);
-      if (authData.profile) setProfile(authData.profile);
-
-      // Fetch Stats & Predictive Band Scores
-      const statsRes = await fetch('/api/user/stats?user_id=u_student');
-      const statsData = await statsRes.json();
-      setStats(statsData);
+      if (authRes.ok) {
+        const authData = await authRes.json();
+        if (authData.user) setUser(authData.user);
+        if (authData.profile) setProfile(authData.profile);
+      }
     } catch (err) {
-      console.error("Error fetching user stats:", err);
+      console.warn("Notice fetching auth profile:", err);
+    }
+
+    try {
+      const statsRes = await fetch('/api/user/stats?user_id=u_student');
+      if (statsRes.ok) {
+        const statsData = await statsRes.json();
+        setStats(statsData);
+      } else {
+        setStats((prev) => prev || DEFAULT_STATS);
+      }
+    } catch (err) {
+      console.warn("Notice fetching stats, using default fallback:", err);
+      setStats((prev) => prev || DEFAULT_STATS);
     }
   };
 

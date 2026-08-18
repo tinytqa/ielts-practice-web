@@ -114,6 +114,8 @@ export interface ErrorInstance {
   error_tag_code: string;
   error_tag_name: string;
   source_type: 'WRITING' | 'SPEAKING' | 'READING' | 'LISTENING';
+  source_id?: string;
+  source_title?: string;
   original_text: string;
   corrected_text: string;
   explanation: string;
@@ -169,6 +171,17 @@ export interface KnowledgeArticle {
   tags: string[];
   status: 'PENDING' | 'APPROVED' | 'REJECTED';
   created_at: string;
+}
+
+export interface LeaderboardItem {
+  rank: number;
+  user_id: string;
+  full_name: string;
+  avatar_initials: string;
+  practice_count: number;
+  avg_band: number;
+  total_score: number;
+  is_current_user?: boolean;
 }
 
 export interface UserStats {
