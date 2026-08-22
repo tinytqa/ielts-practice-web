@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { Navbar } from './components/Navbar';
 import { DashboardView } from './components/DashboardView';
 import { TestBankView } from './components/TestBankView';
-import { WritingGraderView } from './components/WritingGraderView';
 import { SpeakingGraderView } from './components/SpeakingGraderView';
 import { BrainstormView } from './components/BrainstormView';
 import { ErrorNotebookView } from './components/ErrorNotebookView';
@@ -111,12 +110,8 @@ export default function App() {
             <TestBankView onTestCompleted={fetchUserData} />
           )}
 
-          {activeTab === 'writing' && (
-            <WritingGraderView />
-          )}
-
           {activeTab === 'speaking' && (
-            <SpeakingGraderView />
+            <TestBankView initialSkill="SPEAKING" onTestCompleted={fetchUserData} />
           )}
 
           {activeTab === 'brainstorm' && (

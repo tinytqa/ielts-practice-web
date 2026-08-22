@@ -3,7 +3,8 @@ import path from 'path';
 import multer from 'multer';
 import { createServer as createViteServer } from 'vite';
 import { getDb, saveDb } from './server/db.js';
-import { gradeWritingEssay, gradeSpeakingResponse, generateBrainstormIdeas, lookupVocabDetails, generateFullStudySchedule, generateQuizizzQuestions, generateQuizizzFromFile } from './server/geminiService.js';
+import { IELTS_LISTENING_TEST_1 } from './server/listeningTestData.js';
+import { gradeWritingEssay, gradeFullWritingExam, gradeSpeakingResponse, generateBrainstormIdeas, lookupVocabDetails, generateFullStudySchedule, generateQuizizzQuestions, generateQuizizzFromFile } from './server/geminiService.js';
 
 const upload = multer({ limits: { fileSize: 10 * 1024 * 1024 } }); // 10MB limit
 
@@ -207,6 +208,15 @@ async function startServer() {
         }
         qStmt.free();
         sec.questions = questions;
+
+        // If listening test, attach transcript lines & duration from listening seed data
+        if (test.skill_type === 'LISTENING') {
+          const matchedSeedSec = IELTS_LISTENING_TEST_1.sections.find(s => s.id === sec.id);
+          if (matchedSeedSec) {
+            sec.transcript_lines = matchedSeedSec.transcript_lines;
+            sec.duration_seconds = matchedSeedSec.duration_seconds;
+          }
+        }
       }
 
       res.json({ test, sections });
@@ -217,17 +227,40 @@ async function startServer() {
 
   app.post('/api/tests/:id/submit', async (req, res) => {
     const { id } = req.params;
-    const { user_id, answers, time_spent_seconds, mode } = req.body;
+    const { user_id, answers, time_spent_seconds, mode, section_id } = req.body;
 
     try {
-      // Get all questions
-      const qStmt = db.prepare(`
-        SELECT q.id, q.correct_answer, q.explanation_text, q.question_number
-        FROM questions q
-        JOIN test_sections ts ON q.section_id = ts.id
-        WHERE ts.test_id = ?
-      `);
-      qStmt.bind([id]);
+      // Fetch test details for logging errors and determining skill type
+      const testInfoStmt = db.prepare("SELECT title, skill_type FROM tests WHERE id = ?");
+      testInfoStmt.bind([id]);
+      let testTitle = '';
+      let testSkill = 'READING';
+      if (testInfoStmt.step()) {
+        const tObj = testInfoStmt.getAsObject();
+        testTitle = tObj.title as string;
+        testSkill = (tObj.skill_type as string) || 'READING';
+      }
+      testInfoStmt.free();
+
+      // Get all questions or specific section questions if section_id is provided
+      let qStmt;
+      if (section_id) {
+        qStmt = db.prepare(`
+          SELECT q.id, q.correct_answer, q.explanation_text, q.question_number, q.options_json
+          FROM questions q
+          JOIN test_sections ts ON q.section_id = ts.id
+          WHERE ts.test_id = ? AND ts.id = ?
+        `);
+        qStmt.bind([id, section_id]);
+      } else {
+        qStmt = db.prepare(`
+          SELECT q.id, q.correct_answer, q.explanation_text, q.question_number, q.options_json
+          FROM questions q
+          JOIN test_sections ts ON q.section_id = ts.id
+          WHERE ts.test_id = ?
+        `);
+        qStmt.bind([id]);
+      }
       const questionsMap = new Map<string, any>();
       while (qStmt.step()) {
         const q = qStmt.getAsObject();
@@ -239,32 +272,151 @@ async function startServer() {
       const totalQuestions = questionsMap.size || 1;
       const evaluatedAnswers: any[] = [];
 
-      for (const [qId, userAns] of Object.entries(answers as Record<string, string>)) {
-        const qInfo = questionsMap.get(qId);
-        if (qInfo) {
-          const isCorrect = userAns.trim().toLowerCase() === String(qInfo.correct_answer).trim().toLowerCase();
-          if (isCorrect) correctCount++;
+      // Helper to check answer correctness flexibly
+      const checkIsCorrect = (userAns: string, correctAns: string, optionsJson?: string): boolean => {
+        const u = (userAns || '').trim().toLowerCase().replace(/[.,/#!$%^&*;:{}=\-_`~()]/g, ' ').replace(/\s+/g, ' ').trim();
+        const c = (correctAns || '').trim().toLowerCase().replace(/[.,/#!$%^&*;:{}=\-_`~()]/g, ' ').replace(/\s+/g, ' ').trim();
+        if (!u) return false;
+        if (u === c) return true;
 
-          evaluatedAnswers.push({
-            question_id: qId,
-            user_answer: userAns,
-            is_correct: isCorrect,
-            correct_answer: qInfo.correct_answer,
-            explanation_text: qInfo.explanation_text
-          });
+        // Strip prefixes like "a - ", "a: ", "1. "
+        const uLetter = u.replace(/^([a-z])[\s\-:.)]+.*$/, '$1');
+        const cLetter = c.replace(/^([a-z])[\s\-:.)]+.*$/, '$1');
+        if (uLetter.length === 1 && cLetter.length === 1 && uLetter === cLetter) return true;
+
+        // TRUE/FALSE/NOT GIVEN or YES/NO/NOT GIVEN aliases
+        if ((c === 'yes' || c === 'true') && (u === 'yes' || u === 'true' || u === 'y' || u === 't')) return true;
+        if ((c === 'no' || c === 'false') && (u === 'no' || u === 'false' || u === 'n' || u === 'f')) return true;
+        if (c === 'not given' && (u === 'not given' || u === 'ng')) return true;
+
+        // Singular / Plural variations & synonyms
+        if (c === 'habitats' && u === 'habitat') return true;
+        if (c === 'habitat' && u === 'habitats') return true;
+        if (c === 'antibiotics' && u === 'antibiotic') return true;
+        if (c === 'antibiotic' && u === 'antibiotics') return true;
+        if (c === 'pizzas' && u === 'pizza') return true;
+        if (c === 'pizza' && u === 'pizzas') return true;
+        if (c === 'walking' && (u === 'walk' || u === 'walking exercise' || u === 'for a walk')) return true;
+        if (c === 'fruit juice' && (u === 'juice' || u === 'fresh fruit juice')) return true;
+        if (c === 'all corners' && (u === 'corners' || u === 'the corners' || u === 'all the corners')) return true;
+        if (c === 'special skill' && (u === 'skill' || u === 'special skills')) return true;
+        if (c === 'learning toys' && (u === 'toys' || u === 'special learning toys')) return true;
+        if (c === 'germs' && (u === 'colds and flus' || u === 'infections' || u === 'infection' || u === 'viruses')) return true;
+        if (c === 'topic' && u === 'a topic') return true;
+        if (c === 'one' && (u === 'one area' || u === 'specific' || u === '1')) return true;
+        if (c === 'thesis' && (u === 'a thesis' || u === 'thesis statement')) return true;
+        if (c === 'outline' && u === 'an outline') return true;
+        if (c === 'progresses' && (u === 'progress' || u === 'progression' || u === 'proceeds' || u === 'flows')) return true;
+        if (c === 'aspects' && u === 'aspect') return true;
+        if (c === 'real life' && (u === 'real' || u === 'real world')) return true;
+        if (c === 'necessity' && u === 'academic necessity') return true;
+        if (c === 'style guide' && u === 'university style guide') return true;
+        if ((c === '10%' || c === '10') && (u === '10%' || u === '10 percent' || u === 'ten percent' || u === '10')) return true;
+        if (c === 'dying' && u === 'sick and dying') return true;
+        if (c === 'attention' && (u === 'scant attention' || u === 'interest')) return true;
+        if (c === 'bruno' && (u === 'giordano bruno' || u === 'giordano')) return true;
+        if (c === 'motion' && (u === 'movement' || u === 'orbit' || u === 'revolution')) return true;
+        if (c === 'bible' && (u === 'the bible' || u === 'scripture')) return true;
+        if ((c === '20%' || c === '20') && (u === '20%' || u === '20 percent' || u === 'twenty percent' || u === '20')) return true;
+
+        // Check if user entered the option text matching the chosen letter
+        if (optionsJson) {
+          try {
+            const opts: string[] = JSON.parse(optionsJson);
+            const matchedOpt = opts.find(o => {
+              const cleaned = o.trim().toLowerCase().replace(/[.,/#!$%^&*;:{}=\-_`~()]/g, ' ').replace(/\s+/g, ' ');
+              return cleaned.startsWith(u + ' ') || cleaned.startsWith(u) || cleaned === u;
+            });
+            if (matchedOpt) {
+              const optCleaned = matchedOpt.trim().toLowerCase().replace(/[.,/#!$%^&*;:{}=\-_`~()]/g, ' ').replace(/\s+/g, ' ');
+              if (optCleaned.includes(c) || c.includes(uLetter) || c === uLetter) return true;
+            }
+          } catch {}
         }
+
+        return false;
+      };
+
+      // Loop through all questions to evaluate every single question
+      const answerRecord = (answers || {}) as Record<string, string>;
+      for (const [qId, qInfo] of questionsMap.entries()) {
+        const userAns = (answerRecord[qId] || '').trim();
+        const isCorrect = checkIsCorrect(userAns, String(qInfo.correct_answer), qInfo.options_json as string);
+        if (isCorrect) correctCount++;
+
+        evaluatedAnswers.push({
+          question_id: qId,
+          question_number: qInfo.question_number,
+          user_answer: userAns,
+          is_correct: isCorrect,
+          correct_answer: qInfo.correct_answer,
+          explanation_text: qInfo.explanation_text
+        });
       }
 
-      // Calculate estimated IELTS band for Reading/Listening
-      const rawRatio = correctCount / totalQuestions;
-      let bandScore = 4.0;
-      if (rawRatio >= 0.9) bandScore = 8.5;
-      else if (rawRatio >= 0.8) bandScore = 7.5;
-      else if (rawRatio >= 0.7) bandScore = 7.0;
-      else if (rawRatio >= 0.6) bandScore = 6.5;
-      else if (rawRatio >= 0.5) bandScore = 6.0;
-      else if (rawRatio >= 0.4) bandScore = 5.5;
-      else bandScore = 5.0;
+      // Sort evaluated answers by question number
+      evaluatedAnswers.sort((a, b) => (a.question_number || 0) - (b.question_number || 0));
+
+      // Calculate IELTS Band Score
+      let bandScore = 2.0;
+      if (testSkill === 'LISTENING') {
+        // Official IELTS Listening Band Score Scale:
+        // 39-40: 9.0 | 37-38: 8.5 | 35-36: 8.0 | 32-34: 7.5 | 30-31: 7.0 | 26-29: 6.5 | 23-25: 6.0
+        // 18-22: 5.5 | 16-17: 5.0 | 13-15: 4.5 | 10-12: 4.0 | 6-9: 3.5 | 4-5: 3.0 | 0-3: 2.5
+        if (totalQuestions >= 35) {
+          if (correctCount >= 39) bandScore = 9.0;
+          else if (correctCount >= 37) bandScore = 8.5;
+          else if (correctCount >= 35) bandScore = 8.0;
+          else if (correctCount >= 32) bandScore = 7.5;
+          else if (correctCount >= 30) bandScore = 7.0;
+          else if (correctCount >= 26) bandScore = 6.5;
+          else if (correctCount >= 23) bandScore = 6.0;
+          else if (correctCount >= 18) bandScore = 5.5;
+          else if (correctCount >= 16) bandScore = 5.0;
+          else if (correctCount >= 13) bandScore = 4.5;
+          else if (correctCount >= 10) bandScore = 4.0;
+          else if (correctCount >= 6) bandScore = 3.5;
+          else if (correctCount >= 4) bandScore = 3.0;
+          else bandScore = 2.5;
+        } else {
+          const rawRatio = correctCount / totalQuestions;
+          if (rawRatio >= 0.9) bandScore = 8.5;
+          else if (rawRatio >= 0.8) bandScore = 7.5;
+          else if (rawRatio >= 0.7) bandScore = 7.0;
+          else if (rawRatio >= 0.6) bandScore = 6.5;
+          else if (rawRatio >= 0.5) bandScore = 6.0;
+          else if (rawRatio >= 0.4) bandScore = 5.5;
+          else bandScore = 5.0;
+        }
+      } else {
+        // Official IELTS Academic Reading Band Score Scale
+        if (totalQuestions >= 35) {
+          if (correctCount >= 39) bandScore = 9.0;
+          else if (correctCount >= 37) bandScore = 8.5;
+          else if (correctCount >= 35) bandScore = 8.0;
+          else if (correctCount >= 33) bandScore = 7.5;
+          else if (correctCount >= 30) bandScore = 7.0;
+          else if (correctCount >= 27) bandScore = 6.5;
+          else if (correctCount >= 23) bandScore = 6.0;
+          else if (correctCount >= 20) bandScore = 5.5;
+          else if (correctCount >= 16) bandScore = 5.0;
+          else if (correctCount >= 13) bandScore = 4.5;
+          else if (correctCount >= 10) bandScore = 4.0;
+          else if (correctCount >= 7) bandScore = 3.5;
+          else if (correctCount >= 5) bandScore = 3.0;
+          else if (correctCount >= 3) bandScore = 2.5;
+          else bandScore = 2.0;
+        } else {
+          const rawRatio = correctCount / totalQuestions;
+          if (rawRatio >= 0.9) bandScore = 8.5;
+          else if (rawRatio >= 0.8) bandScore = 7.5;
+          else if (rawRatio >= 0.7) bandScore = 7.0;
+          else if (rawRatio >= 0.6) bandScore = 6.5;
+          else if (rawRatio >= 0.5) bandScore = 6.0;
+          else if (rawRatio >= 0.4) bandScore = 5.5;
+          else bandScore = 5.0;
+        }
+      }
 
       const attemptId = genId('att');
       db.run(`
@@ -388,6 +540,89 @@ async function startServer() {
       res.json({
         submission_id: subId,
         word_count: wordCount,
+        result: aiResult
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 3b. Full IELTS Academic Writing Exam (Task 1 + Task 2 together in 60 mins)
+  app.post('/api/grading/writing-full', async (req, res) => {
+    const { user_id, task1_prompt, task1_essay, task2_prompt, task2_essay, target_band } = req.body;
+
+    try {
+      const task1WordCount = task1_essay ? task1_essay.trim().split(/\s+/).filter(Boolean).length : 0;
+      const task2WordCount = task2_essay ? task2_essay.trim().split(/\s+/).filter(Boolean).length : 0;
+      const subId1 = genId('sub_w1');
+      const subId2 = genId('sub_w2');
+
+      // Record submissions
+      db.run(`
+        INSERT INTO writing_submissions (id, user_id, task_type, prompt_title, essay_text, word_count)
+        VALUES (?, ?, 'TASK_1', ?, ?, ?)
+      `, [subId1, user_id || 'u_student', task1_prompt || 'IELTS Writing Task 1', task1_essay || '', task1WordCount]);
+
+      db.run(`
+        INSERT INTO writing_submissions (id, user_id, task_type, prompt_title, essay_text, word_count)
+        VALUES (?, ?, 'TASK_2', ?, ?, ?)
+      `, [subId2, user_id || 'u_student', task2_prompt || 'IELTS Writing Task 2', task2_essay || '', task2WordCount]);
+
+      // Grade via Gemini AI
+      const aiResult = await gradeFullWritingExam(
+        task1_prompt || 'IELTS Writing Task 1',
+        task1_essay || '',
+        task2_prompt || 'IELTS Writing Task 2',
+        task2_essay || '',
+        target_band || 7.0
+      );
+
+      // Save Task 1 errors
+      if (aiResult.task1_result?.errors && Array.isArray(aiResult.task1_result.errors)) {
+        for (const err of aiResult.task1_result.errors) {
+          db.run(`
+            INSERT INTO error_instances (id, user_id, error_tag_id, source_type, source_id, original_text, corrected_text, explanation)
+            VALUES (?, ?, 'et_1', 'WRITING', ?, ?, ?, ?)
+          `, [genId('err'), user_id || 'u_student', subId1, err.original_text, err.corrected_text, err.explanation]);
+        }
+      }
+
+      // Save Task 2 errors
+      if (aiResult.task2_result?.errors && Array.isArray(aiResult.task2_result.errors)) {
+        for (const err of aiResult.task2_result.errors) {
+          db.run(`
+            INSERT INTO error_instances (id, user_id, error_tag_id, source_type, source_id, original_text, corrected_text, explanation)
+            VALUES (?, ?, 'et_4', 'WRITING', ?, ?, ?, ?)
+          `, [genId('err'), user_id || 'u_student', subId2, err.original_text, err.corrected_text, err.explanation]);
+        }
+      }
+
+      // Save Advanced Suggestions
+      if (aiResult.task1_result?.suggestions && Array.isArray(aiResult.task1_result.suggestions)) {
+        for (const sug of aiResult.task1_result.suggestions) {
+          db.run(`
+            INSERT INTO advanced_suggestions (id, submission_id, original_phrase, suggested_phrase, target_band, reason)
+            VALUES (?, ?, ?, ?, ?, ?)
+          `, [genId('sug'), subId1, sug.original_phrase, sug.suggested_phrase, sug.target_band || 7.5, sug.reason]);
+        }
+      }
+
+      if (aiResult.task2_result?.suggestions && Array.isArray(aiResult.task2_result.suggestions)) {
+        for (const sug of aiResult.task2_result.suggestions) {
+          db.run(`
+            INSERT INTO advanced_suggestions (id, submission_id, original_phrase, suggested_phrase, target_band, reason)
+            VALUES (?, ?, ?, ?, ?, ?)
+          `, [genId('sug'), subId2, sug.original_phrase, sug.suggested_phrase, sug.target_band || 7.5, sug.reason]);
+        }
+      }
+
+      saveDb();
+
+      res.json({
+        task1_sub_id: subId1,
+        task2_sub_id: subId2,
+        task1_word_count: task1WordCount,
+        task2_word_count: task2WordCount,
         result: aiResult
       });
     } catch (err: any) {
@@ -802,11 +1037,11 @@ async function startServer() {
   // GET /api/leaderboard - Top 10 Leaderboard based on practice count + practice score
   app.get('/api/leaderboard', async (req, res) => {
     try {
-      const db = getDb();
+      const db = await getDb();
       const userId = (req.query.user_id as string) || 'u_student';
 
       // Calculate current user practice count and average score
-      const testAttemptsStmt = db.prepare("SELECT band_score FROM test_attempts WHERE user_id = ?");
+      const testAttemptsStmt = db.prepare("SELECT band_score FROM user_test_attempts WHERE user_id = ?");
       testAttemptsStmt.bind([userId]);
       let testCount = 0;
       let totalBands = 0;

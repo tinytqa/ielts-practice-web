@@ -12,8 +12,6 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, setActiveTab, user, s
   const navItems = [
     { id: 'dashboard', label: 'Tổng quan & Lộ trình', icon: LayoutDashboard },
     { id: 'tests', label: 'Ngân hàng đề thi', icon: BookOpen },
-    { id: 'writing', label: 'Chấm bài Writing', icon: Edit3 },
-    { id: 'speaking', label: 'Luyện Speaking AI', icon: Mic },
     { id: 'brainstorm', label: 'Brainstorm Ý tưởng', icon: Brain },
     { id: 'errors', label: 'Sổ lỗi sai', icon: AlertCircle },
     { id: 'knowledge', label: 'Từ vựng & Bài học', icon: FileText },

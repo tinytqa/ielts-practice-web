@@ -33,6 +33,13 @@ export interface TestItem {
   created_at: string;
 }
 
+export interface AudioTranscriptLine {
+  time: string;
+  seconds: number;
+  speaker?: string;
+  text: string;
+}
+
 export interface TestSection {
   id: string;
   test_id: string;
@@ -40,6 +47,8 @@ export interface TestSection {
   content_passage: string;
   audio_url?: string;
   order_index: number;
+  duration_seconds?: number;
+  transcript_lines?: AudioTranscriptLine[];
   questions?: Question[];
 }
 
@@ -47,11 +56,12 @@ export interface Question {
   id: string;
   section_id: string;
   question_number: number;
-  question_type: 'MULTIPLE_CHOICE' | 'TRUE_FALSE_NOT_GIVEN' | 'MATCHING_HEADINGS' | 'FILL_BLANK';
+  question_type: string;
   prompt: string;
   options?: string[]; // Parsed from JSON
   correct_answer: string;
   explanation_text: string;
+  audio_timestamp?: string;
 }
 
 export interface TestAttempt {
@@ -109,17 +119,29 @@ export interface CriterionScore {
 
 export interface ErrorInstance {
   id: string;
-  user_id: string;
-  error_tag_id: string;
+  user_id?: string;
+  error_tag_id?: string;
   error_tag_code: string;
-  error_tag_name: string;
-  source_type: 'WRITING' | 'SPEAKING' | 'READING' | 'LISTENING';
+  error_tag_name?: string;
+  source_type?: 'WRITING' | 'SPEAKING' | 'READING' | 'LISTENING';
   source_id?: string;
   source_title?: string;
   original_text: string;
   corrected_text: string;
   explanation: string;
-  created_at: string;
+  created_at?: string;
+}
+
+export interface SentenceUpgrade {
+  original_sentence: string;
+  upgraded_sentence: string;
+  target_band: number;
+  changes_breakdown: {
+    highlight_text: string;
+    replaced_with: string;
+    reason: string;
+  }[];
+  explanation: string;
 }
 
 export interface AdvancedSuggestion {
@@ -127,6 +149,18 @@ export interface AdvancedSuggestion {
   suggested_phrase: string;
   target_band: number;
   reason: string;
+}
+
+export interface ImprovedBand8Essay {
+  full_text: string;
+  paragraph_breakdown: {
+    paragraph_type: 'Introduction' | 'Overview' | 'Body 1' | 'Body 2' | 'Conclusion';
+    original_paragraph: string;
+    improved_paragraph: string;
+    why_improved: string;
+    key_changes: string[];
+  }[];
+  overall_strategy: string;
 }
 
 export interface AIGradingResult {
@@ -138,6 +172,8 @@ export interface AIGradingResult {
   general_feedback: string;
   errors: ErrorInstance[];
   suggestions: AdvancedSuggestion[];
+  sentence_upgrades?: SentenceUpgrade[];
+  improved_band8_essay?: ImprovedBand8Essay;
   sample_comparison?: string;
   created_at: string;
 }

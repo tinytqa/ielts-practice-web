@@ -1,6 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import initSqlJs, { Database } from 'sql.js';
+import { IELTS_READING_TEST_1 } from './readingTestData';
+import { IELTS_LISTENING_TEST_1 } from './listeningTestData';
 
 const DB_FILE = path.join(process.cwd(), 'database.sqlite');
 let db: Database | null = null;
@@ -272,6 +274,191 @@ function runMigrations(database: Database) {
 
   // Seed default data if empty
   seedInitialData(database);
+
+  // Always ensure standard IELTS Reading, Listening, Writing & Speaking Tests are seeded
+  ensureReadingTestSeeded(database);
+  ensureListeningTestSeeded(database);
+  ensureWritingTestSeeded(database);
+  ensureSpeakingTestSeeded(database);
+}
+
+export function ensureListeningTestSeeded(database: Database) {
+  try {
+    // 1. Upsert test metadata
+    database.run(`
+      INSERT INTO tests (id, title, skill_type, category, difficulty, time_limit_minutes)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        title = excluded.title,
+        skill_type = excluded.skill_type,
+        category = excluded.category,
+        difficulty = excluded.difficulty,
+        time_limit_minutes = excluded.time_limit_minutes;
+    `, [
+      IELTS_LISTENING_TEST_1.test.id,
+      IELTS_LISTENING_TEST_1.test.title,
+      IELTS_LISTENING_TEST_1.test.skill_type,
+      IELTS_LISTENING_TEST_1.test.category,
+      IELTS_LISTENING_TEST_1.test.difficulty,
+      IELTS_LISTENING_TEST_1.test.time_limit_minutes
+    ]);
+
+    // 2. Remove any previous questions & sections for test_l1 to refresh
+    const oldSections = database.exec(`SELECT id FROM test_sections WHERE test_id = '${IELTS_LISTENING_TEST_1.test.id}'`);
+    if (oldSections[0]?.values) {
+      for (const row of oldSections[0].values) {
+        const sId = row[0];
+        database.run(`DELETE FROM questions WHERE section_id = ?;`, [sId]);
+      }
+    }
+    database.run(`DELETE FROM test_sections WHERE test_id = ?;`, [IELTS_LISTENING_TEST_1.test.id]);
+
+    // 3. Insert 4 Sections and 40 Questions
+    for (const sec of IELTS_LISTENING_TEST_1.sections) {
+      database.run(`
+        INSERT INTO test_sections (id, test_id, title, content_passage, order_index)
+        VALUES (?, ?, ?, ?, ?);
+      `, [sec.id, sec.test_id, sec.title, sec.content_passage, sec.order_index]);
+
+      for (const q of sec.questions) {
+        database.run(`
+          INSERT INTO questions (id, section_id, question_number, question_type, prompt, options_json, correct_answer, explanation_text)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+        `, [
+          q.id,
+          q.section_id,
+          q.question_number,
+          q.question_type,
+          q.prompt,
+          JSON.stringify(q.options || []),
+          q.correct_answer,
+          q.explanation_text
+        ]);
+      }
+    }
+    console.log("✅ Standard IELTS Academic Listening test (4 sections, 40 questions) successfully synchronized.");
+  } catch (err) {
+    console.error("Error ensuring listening test seeded:", err);
+  }
+}
+
+export function ensureSpeakingTestSeeded(database: Database) {
+  try {
+    database.run(`
+      INSERT INTO tests (id, title, skill_type, category, difficulty, time_limit_minutes)
+      VALUES ('test_s1', 'IELTS Speaking Academic: Weather (Part 1), Unforgettable Ad (Part 2), Art & Society (Part 3)', 'SPEAKING', 'ACADEMIC', 'MEDIUM', 15)
+      ON CONFLICT(id) DO UPDATE SET
+        title = excluded.title,
+        skill_type = excluded.skill_type,
+        category = excluded.category,
+        difficulty = excluded.difficulty,
+        time_limit_minutes = excluded.time_limit_minutes;
+    `);
+
+    // Clean old sections for test_s1
+    database.run(`DELETE FROM test_sections WHERE test_id = 'test_s1';`);
+
+    // Insert Part 1, Part 2, Part 3 sections
+    database.run(`
+      INSERT INTO test_sections (id, test_id, title, content_passage, order_index) VALUES
+      ('ts_s1_p1', 'test_s1', 'Part 1: Topic Weather (Introduction & Interview - 4-5 mins)', 'In Part 1, the examiner asks general questions on familiar daily topics.\nTopic: Weather\n1. What''s your favorite type of weather?\n2. Do you prefer hot or cold weather?\n3. Does the weather ever affect your mood?\n4. How is the weather in your hometown?\n5. Do you think that weather affects people''s behavior?', 1),
+      ('ts_s1_p2', 'test_s1', 'Part 2: Describe an Unforgettable Advertisement (Cue Card Task - 3-4 mins)', 'Describe an unforgettable advertisement that you saw.\n\nYou should say:\n• Where you saw it\n• What kind of advertisement it was\n• What product/service was advertised\n• And say how you felt when you saw it', 2),
+      ('ts_s1_p3', 'test_s1', 'Part 3: Topic Art & Society (Two-way Discussion - 4-5 mins)', 'In Part 3, the examiner discusses more abstract, analytical questions related to culture and society.\nTopic: Art & Society\n1. How important do you think art is in our daily lives?\n2. Do you believe that everyone can appreciate and understand art in the same way?\n3. In your opinion, should art education be mandatory in schools?\n4. How has the role of art in society changed over the years?\n5. Can you discuss the impact of technology on traditional art forms?', 3);
+    `);
+
+    console.log("✅ Standard IELTS Academic Speaking test (Part 1, Part 2 & Part 3) successfully synchronized.");
+  } catch (err) {
+    console.error("Error ensuring speaking test seeded:", err);
+  }
+}
+
+export function ensureWritingTestSeeded(database: Database) {
+  try {
+    database.run(`
+      INSERT INTO tests (id, title, skill_type, category, difficulty, time_limit_minutes)
+      VALUES ('test_w1', 'Writing Academic Exam: 2004 vs 2014 Archaeological Maps (Task 1) & Hard Work in Education & Employment (Task 2)', 'WRITING', 'ACADEMIC', 'MEDIUM', 60)
+      ON CONFLICT(id) DO UPDATE SET
+        title = excluded.title,
+        skill_type = excluded.skill_type,
+        category = excluded.category,
+        difficulty = excluded.difficulty,
+        time_limit_minutes = excluded.time_limit_minutes;
+    `);
+
+    // Clean old sections for test_w1
+    database.run(`DELETE FROM test_sections WHERE test_id = 'test_w1';`);
+
+    // Insert Task 1 & Task 2
+    database.run(`
+      INSERT INTO test_sections (id, test_id, title, content_passage, order_index) VALUES
+      ('ts_w1', 'test_w1', 'Task 1: Archaeological Findings Map in 2004 and 2014 (150 words, 20 mins)', 'The maps below show recent archaeological findings at a historic site in 2004 and 2014. Provide an overview of the information by identifying and describing the key details, and include comparisons where appropriate.', 1),
+      ('ts_w2', 'test_w1', 'Task 2: Hard Work in Education and Employment (250 words, 40 mins)', 'In both education and employment, some people work harder than others. Why do some people work harder than others? Is working hard always a good thing?', 2);
+    `);
+
+    console.log("✅ Standard IELTS Academic Writing test (Task 1 & Task 2) successfully synchronized.");
+  } catch (err) {
+    console.error("Error ensuring writing test seeded:", err);
+  }
+}
+
+export function ensureReadingTestSeeded(database: Database) {
+  try {
+    // 1. Upsert test metadata
+    database.run(`
+      INSERT INTO tests (id, title, skill_type, category, difficulty, time_limit_minutes)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        title = excluded.title,
+        skill_type = excluded.skill_type,
+        category = excluded.category,
+        difficulty = excluded.difficulty,
+        time_limit_minutes = excluded.time_limit_minutes;
+    `, [
+      IELTS_READING_TEST_1.test.id,
+      IELTS_READING_TEST_1.test.title,
+      IELTS_READING_TEST_1.test.skill_type,
+      IELTS_READING_TEST_1.test.category,
+      IELTS_READING_TEST_1.test.difficulty,
+      IELTS_READING_TEST_1.test.time_limit_minutes
+    ]);
+
+    // 2. Remove any previous questions & sections for test_r1 to refresh
+    const oldSections = database.exec(`SELECT id FROM test_sections WHERE test_id = '${IELTS_READING_TEST_1.test.id}'`);
+    if (oldSections[0]?.values) {
+      for (const row of oldSections[0].values) {
+        const sId = row[0];
+        database.run(`DELETE FROM questions WHERE section_id = ?;`, [sId]);
+      }
+    }
+    database.run(`DELETE FROM test_sections WHERE test_id = ?;`, [IELTS_READING_TEST_1.test.id]);
+
+    // 3. Insert 3 Passages and 40 Questions
+    for (const sec of IELTS_READING_TEST_1.sections) {
+      database.run(`
+        INSERT INTO test_sections (id, test_id, title, content_passage, order_index)
+        VALUES (?, ?, ?, ?, ?);
+      `, [sec.id, sec.test_id, sec.title, sec.content_passage, sec.order_index]);
+
+      for (const q of sec.questions) {
+        database.run(`
+          INSERT INTO questions (id, section_id, question_number, question_type, prompt, options_json, correct_answer, explanation_text)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+        `, [
+          q.id,
+          q.section_id,
+          q.question_number,
+          q.question_type,
+          q.prompt,
+          JSON.stringify(q.options),
+          q.correct_answer,
+          q.explanation_text
+        ]);
+      }
+    }
+    console.log("✅ Standard IELTS Academic Reading test (3 passages, 40 questions) successfully synchronized.");
+  } catch (err) {
+    console.error("Error ensuring reading test seeded:", err);
+  }
 }
 
 function seedInitialData(database: Database) {
@@ -317,8 +504,23 @@ function seedInitialData(database: Database) {
       INSERT INTO tests (id, title, skill_type, category, difficulty, time_limit_minutes) VALUES
       ('test_r1', 'Reading Cam 18 Test 1: The Impact of Climate Change on Coral Reefs', 'READING', 'ACADEMIC', 'MEDIUM', 20),
       ('test_l1', 'Listening Practice: University Course Registration & Campus Tour', 'LISTENING', 'ACADEMIC', 'EASY', 15),
-      ('test_w1', 'Writing Task 2: AI Automation & Future Jobs', 'WRITING', 'ACADEMIC', 'HARD', 40),
-      ('test_s1', 'Speaking Part 2 & 3: Describe a Memorable Journey', 'SPEAKING', 'ACADEMIC', 'MEDIUM', 15);
+      ('test_w1', 'Writing Academic Exam: 2004 vs 2014 Archaeological Maps (Task 1) & Hard Work in Education & Employment (Task 2)', 'WRITING', 'ACADEMIC', 'MEDIUM', 60),
+      ('test_s1', 'Speaking Academic Full Exam: Weather (Part 1), Unforgettable Ad (Part 2), Art (Part 3)', 'SPEAKING', 'ACADEMIC', 'MEDIUM', 15);
+    `);
+
+    // Writing Sections (Task 1 & Task 2)
+    database.run(`
+      INSERT INTO test_sections (id, test_id, title, content_passage, order_index) VALUES
+      ('ts_w1', 'test_w1', 'Task 1: Archaeological Findings Map in 2004 and 2014 (150 words, 20 mins)', 'The maps below show recent archaeological findings at a historic site in 2004 and 2014. Provide an overview of the information by identifying and describing the key details, and include comparisons where appropriate.', 1),
+      ('ts_w2', 'test_w1', 'Task 2: Hard Work in Education and Employment (250 words, 40 mins)', 'In both education and employment, some people work harder than others. Why do some people work harder than others? Is working hard always a good thing?', 2);
+    `);
+
+    // Speaking Sections (Part 1, Part 2, Part 3)
+    database.run(`
+      INSERT INTO test_sections (id, test_id, title, content_passage, order_index) VALUES
+      ('ts_s1_p1', 'test_s1', 'Part 1: Topic Weather (Introduction & Interview - 4-5 mins)', 'In Part 1, the examiner asks you general questions on familiar topics.\nTopic: Weather\n1. What''s your favorite type of weather?\n2. Do you prefer hot or cold weather?\n3. Does the weather ever affect your mood?\n4. How is the weather in your hometown?\n5. Do you think that weather affects people''s behavior?', 1),
+      ('ts_s1_p2', 'test_s1', 'Part 2: Describe an Unforgettable Advertisement (Cue Card - 3-4 mins)', 'Describe an unforgettable advertisement that you saw.\n\nYou should say:\n• Where you saw it\n• What kind of advertisement it was\n• What product/service was advertised\n• And say how you felt when you saw it', 2),
+      ('ts_s1_p3', 'test_s1', 'Part 3: Topic Art (In-depth Two-way Discussion - 4-5 mins)', 'In Part 3, the examiner discusses more abstract, analytical questions related to culture and society.\nTopic: Art\n1. How important do you think art is in our daily lives?\n2. Do you believe that everyone can appreciate and understand art in the same way?\n3. In your opinion, should art education be mandatory in schools?\n4. How has the role of art in society changed over the years?\n5. Can you discuss the impact of technology on traditional art forms?', 3);
     `);
 
     // Reading Passage & Questions
