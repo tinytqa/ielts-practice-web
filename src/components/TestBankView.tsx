@@ -3,7 +3,8 @@ import {
   BookOpen, Clock, CheckCircle2, AlertCircle, Play, Pause, 
   RotateCcw, ArrowLeft, ArrowRight, Volume2, Bookmark, Check, 
   X, Filter, Layers, Zap, Award, Sparkles, ChevronRight, HelpCircle,
-  Edit3, Copy, Trash2, Image as ImageIcon, Compass
+  Edit3, Copy, Trash2, Image as ImageIcon, Compass, Upload, Music, FolderCheck,
+  FileText, ExternalLink, Share2, RefreshCw, Coins, Flame
 } from 'lucide-react';
 import { TestItem, TestSection, Question } from '../types';
 import { Task1MapDiagram } from './Task1MapDiagram';
@@ -12,6 +13,8 @@ import { EssayErrorHighlightViewer } from './EssayErrorHighlightViewer';
 import { SpeakingGraderView } from './SpeakingGraderView';
 import { ListeningTestPlayer } from './ListeningTestPlayer';
 import { ListeningScoreTableModal } from './ListeningScoreTableModal';
+import { createIeltsDocInGoogleDocs, formatWritingFeedbackReport } from '../lib/googleWorkspace';
+import { googleSignIn, getAccessToken } from '../lib/firebaseAuth';
 
 interface TestBankViewProps {
   initialSkill?: string;
@@ -76,6 +79,16 @@ export const TestBankView: React.FC<TestBankViewProps> = ({ initialSkill = 'ALL'
   const [isScoreTableModalOpen, setIsScoreTableModalOpen] = useState<boolean>(false);
   const [isListeningScoreModalOpen, setIsListeningScoreModalOpen] = useState<boolean>(false);
   const [isWritingCriteriaModalOpen, setIsWritingCriteriaModalOpen] = useState<boolean>(false);
+  const [activeSeekTimestamp, setActiveSeekTimestamp] = useState<number | null>(null);
+
+  const parseTimestampToSeconds = (ts?: string): number => {
+    if (!ts) return 0;
+    const clean = ts.replace(/[\[\]\(\)]/g, '').trim();
+    const parts = clean.split(':').map(Number);
+    if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) return parts[0] * 60 + parts[1];
+    if (parts.length === 3 && !isNaN(parts[0]) && !isNaN(parts[1]) && !isNaN(parts[2])) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    return 0;
+  };
 
   // Active Test State
   const [userAnswers, setUserAnswers] = useState<Record<string, string>>({});
@@ -88,8 +101,107 @@ export const TestBankView: React.FC<TestBankViewProps> = ({ initialSkill = 'ALL'
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [reviewFilter, setReviewFilter] = useState<'ALL' | 'WRONG_ONLY'>('ALL');
   const [writingResultTab, setWritingResultTab] = useState<'OVERVIEW' | 'TASK_1' | 'TASK_2'>('OVERVIEW');
+  const [isExportingToDocs, setIsExportingToDocs] = useState<boolean>(false);
+  const [exportedDocUrl, setExportedDocUrl] = useState<string | null>(null);
+  const [exportDocSuccess, setExportDocSuccess] = useState<string | null>(null);
 
   const questionRefs = useRef<Record<string, HTMLDivElement | null>>({});
+
+  const handleExportWritingToGoogleDocs = async (taskTypeFilter?: 'TASK_1' | 'TASK_2') => {
+    setIsExportingToDocs(true);
+    setExportDocSuccess(null);
+    try {
+      let token = await getAccessToken();
+      if (!token) {
+        const signInRes = await googleSignIn();
+        token = signInRes?.accessToken || null;
+      }
+      if (!token) {
+        throw new Error('Vui lòng cấp quyền kết nối Google Docs để tiếp tục.');
+      }
+
+      let docTitle = `IELTS Writing Evaluation - ${activeTest?.title || 'Report'}`;
+      let reportContent = '';
+
+      if (submissionResult?.full_exam && (!taskTypeFilter || writingResultTab === 'OVERVIEW')) {
+        docTitle = `IELTS Writing Full Exam Evaluation - Band ${submissionResult.band_score?.toFixed(1) || '0.0'}`;
+        const task1Prompt = sections.find(s => s.order_index === 1)?.content_passage || 'Task 1 Map Analysis';
+        const task2Prompt = sections.find(s => s.order_index === 2)?.content_passage || 'Task 2 Essay';
+
+        const reportTask1 = formatWritingFeedbackReport({
+          taskTitle: task1Prompt,
+          taskLabel: 'Task 1: Report / Map Analysis',
+          bandScore: submissionResult.result?.task1_band || 0,
+          essayText: writingTask1Essay,
+          generalVerdict: submissionResult.result?.task1_result?.general_verdict || submissionResult.result?.task1_result?.general_feedback,
+          criteria: submissionResult.result?.task1_result?.criteria,
+          errors: submissionResult.result?.task1_result?.errors,
+          upgrades: submissionResult.result?.task1_result?.sentence_upgrades,
+          band8Essay: submissionResult.result?.task1_result?.improved_band8_essay
+        });
+
+        const reportTask2 = formatWritingFeedbackReport({
+          taskTitle: task2Prompt,
+          taskLabel: 'Task 2: Academic Essay',
+          bandScore: submissionResult.result?.task2_band || 0,
+          essayText: writingTask2Essay,
+          generalVerdict: submissionResult.result?.task2_result?.general_verdict || submissionResult.result?.task2_result?.general_feedback,
+          criteria: submissionResult.result?.task2_result?.criteria,
+          errors: submissionResult.result?.task2_result?.errors,
+          upgrades: submissionResult.result?.task2_result?.sentence_upgrades,
+          band8Essay: submissionResult.result?.task2_result?.improved_band8_essay
+        });
+
+        reportContent = `========================================================================\n` +
+          `IELTS WRITING FULL EXAM REPORT (TASK 1 & TASK 2)\n` +
+          `OVERALL ESTIMATED BAND SCORE: BAND ${submissionResult.band_score?.toFixed(1)} / 9.0\n` +
+          `Nhận xét chung: ${submissionResult.result?.general_verdict || submissionResult.result?.general_feedback || 'Hoàn thành bài thi full test 60 phút'}\n` +
+          `========================================================================\n\n` +
+          `=== PHẦN 1: TASK 1 REPORT (CHIẾM 1/3 TỔNG ĐIỂM) ===\n\n${reportTask1}\n\n\n` +
+          `=== PHẦN 2: TASK 2 ESSAY (CHIẾM 2/3 TỔNG ĐIỂM) ===\n\n${reportTask2}`;
+      } else {
+        const isTask1 = taskTypeFilter === 'TASK_1' || writingResultTab === 'TASK_1' || submissionResult?.task_type === 'TASK_1';
+        const activeTaskResult = (isTask1 && submissionResult?.full_exam)
+          ? submissionResult.result?.task1_result
+          : (!isTask1 && submissionResult?.full_exam)
+          ? submissionResult.result?.task2_result
+          : submissionResult?.result;
+        
+        const activeBand = (isTask1 && submissionResult?.full_exam)
+          ? (submissionResult.result?.task1_band || 0)
+          : (!isTask1 && submissionResult?.full_exam)
+          ? (submissionResult.result?.task2_band || 0)
+          : (submissionResult?.band_score || 0);
+
+        const essay = isTask1 ? writingTask1Essay : writingTask2Essay;
+        const prompt = isTask1 
+          ? (sections.find(s => s.order_index === 1)?.content_passage || sections[0]?.content_passage || 'Task 1 Archaeological Map Analysis')
+          : (sections.find(s => s.order_index === 2)?.content_passage || sections[0]?.content_passage || 'Task 2 Hard Work Essay');
+
+        docTitle = `IELTS Writing ${isTask1 ? 'Task 1' : 'Task 2'} Feedback - Band ${activeBand.toFixed(1)}`;
+        reportContent = formatWritingFeedbackReport({
+          taskTitle: prompt,
+          taskLabel: isTask1 ? 'Task 1: Report / Map Analysis' : 'Task 2: Academic Essay',
+          bandScore: activeBand,
+          essayText: essay,
+          generalVerdict: activeTaskResult?.general_verdict || activeTaskResult?.general_feedback,
+          criteria: activeTaskResult?.criteria,
+          errors: activeTaskResult?.errors,
+          upgrades: activeTaskResult?.sentence_upgrades,
+          band8Essay: activeTaskResult?.improved_band8_essay
+        });
+      }
+
+      const res = await createIeltsDocInGoogleDocs(token, docTitle, reportContent);
+      setExportedDocUrl(res.url);
+      setExportDocSuccess('Đã xuất thành công nhận xét & bài viết sang Google Docs!');
+    } catch (err: any) {
+      console.error("Docs export error:", err);
+      alert(`Không thể xuất sang Google Docs: ${err.message || err}`);
+    } finally {
+      setIsExportingToDocs(false);
+    }
+  };
 
   const handlePasteClipboard = async (orderIndex: number) => {
     try {
@@ -233,8 +345,39 @@ export const TestBankView: React.FC<TestBankViewProps> = ({ initialSkill = 'ALL'
     setUserAnswers((prev) => ({ ...prev, [questionId]: val }));
   };
 
+  const handleUploadSectionAudio = async (sectionId: string, file: File) => {
+    if (!activeTest || !sectionId || !file) return;
+    try {
+      const formData = new FormData();
+      formData.append('audio', file);
+      const res = await fetch(`/api/tests/${activeTest.id}/sections/${sectionId}/audio`, {
+        method: 'POST',
+        body: formData,
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.audio_url) {
+          setSections(prev => prev.map(s => s.id === sectionId ? { ...s, audio_url: data.audio_url } : s));
+        }
+      }
+    } catch (err) {
+      console.error("Failed to upload audio for section", err);
+    }
+  };
+
   const handleSubmitTest = async () => {
     if (!activeTest || isSubmitting) return;
+
+    // Immediately stop any playing audio and speech synthesis upon clicking submit
+    if (typeof window !== 'undefined') {
+      if (window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+      document.querySelectorAll('audio').forEach((audioEl) => {
+        audioEl.pause();
+      });
+    }
+
     setIsSubmitting(true);
 
     try {
@@ -742,7 +885,13 @@ export const TestBankView: React.FC<TestBankViewProps> = ({ initialSkill = 'ALL'
       <div className="bg-white border border-slate-200/80 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-4 sticky top-16 z-40 shadow-sm">
         <div className="flex items-center gap-3">
           <button
-            onClick={() => setActiveTest(null)}
+            onClick={() => {
+              if (typeof window !== 'undefined') {
+                if (window.speechSynthesis) window.speechSynthesis.cancel();
+                document.querySelectorAll('audio').forEach((audioEl) => audioEl.pause());
+              }
+              setActiveTest(null);
+            }}
             className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 transition cursor-pointer border border-slate-200"
             title="Thoát bài thi"
           >
@@ -800,6 +949,42 @@ export const TestBankView: React.FC<TestBankViewProps> = ({ initialSkill = 'ALL'
                 </div>
                 <p className="text-[10px] text-slate-400 italic pt-1 border-t border-slate-800">
                   Nhấp để xem toàn bộ bảng quy đổi chi tiết.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {activeTest.skill_type === 'LISTENING' && (
+            <div className="relative group">
+              <button
+                type="button"
+                onClick={() => setIsListeningScoreModalOpen(true)}
+                className="text-xs font-bold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 px-3 py-1.5 rounded-xl transition cursor-pointer flex items-center gap-1.5 shadow-2xs"
+                title="Bảng quy đổi số câu đúng sang Band điểm IELTS Listening chuẩn"
+              >
+                <Award className="w-3.5 h-3.5 text-emerald-600" />
+                <span className="hidden sm:inline">Quy Đổi Band Listening</span>
+                <span className="sm:hidden">Quy Đổi</span>
+              </button>
+
+              {/* Tooltip on hover */}
+              <div className="absolute right-0 top-full mt-2 hidden group-hover:block z-50 w-64 p-3 bg-slate-900 text-white rounded-2xl shadow-xl text-[11px] space-y-1.5 pointer-events-none animate-in fade-in duration-150 border border-slate-800">
+                <div className="font-extrabold text-emerald-400 flex items-center justify-between border-b border-slate-700 pb-1">
+                  <span>Quy đổi Band Listening</span>
+                  <span>Thang 40 câu</span>
+                </div>
+                <div className="grid grid-cols-2 gap-1 text-[10px] text-slate-300">
+                  <div>• 39-40: <strong className="text-emerald-300">Band 9.0</strong></div>
+                  <div>• 37-38: <strong className="text-emerald-300">Band 8.5</strong></div>
+                  <div>• 35-36: <strong className="text-emerald-300">Band 8.0</strong></div>
+                  <div>• 32-34: <strong className="text-emerald-300">Band 7.5</strong></div>
+                  <div>• 30-31: <strong className="text-emerald-300">Band 7.0</strong></div>
+                  <div>• 26-29: <strong className="text-emerald-300">Band 6.5</strong></div>
+                  <div>• 23-25: <strong className="text-emerald-300">Band 6.0</strong></div>
+                  <div>• 16-17: <strong className="text-emerald-300">Band 5.0</strong></div>
+                </div>
+                <p className="text-[10px] text-slate-400 italic pt-1 border-t border-slate-800">
+                  Nhấp để xem bảng quy đổi Band Listening đầy đủ.
                 </p>
               </div>
             </div>
@@ -872,9 +1057,49 @@ export const TestBankView: React.FC<TestBankViewProps> = ({ initialSkill = 'ALL'
                 </span>
                 <span className="text-sm font-bold text-slate-500">/ 9.0</span>
               </div>
+              {submissionResult.earned_coins && (
+                <div className="mt-2 inline-flex items-center gap-2 bg-gradient-to-r from-amber-50 to-emerald-50 border border-amber-300 text-amber-950 px-3 py-1.5 rounded-xl text-xs font-bold shadow-2xs">
+                  <Coins className="w-4 h-4 text-amber-600 shrink-0" />
+                  <span>
+                    +{submissionResult.earned_coins.amount_added} Xu thưởng ({submissionResult.earned_coins.base_amount} gốc + {submissionResult.earned_coins.bonus_amount} thưởng Band) • Số dư: {submissionResult.earned_coins.current_balance} Xu
+                  </span>
+                </div>
+              )}
             </div>
             
             <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => handleExportWritingToGoogleDocs()}
+                disabled={isExportingToDocs}
+                className="text-xs font-bold text-blue-800 bg-blue-50 hover:bg-blue-100 border border-blue-300 px-3.5 py-2 rounded-xl transition cursor-pointer flex items-center gap-1.5 w-fit shadow-xs disabled:opacity-50"
+                title="Xuất toàn bộ bài viết, bảng điểm 4 tiêu chí và sửa lỗi chi tiết sang tài liệu Google Docs"
+              >
+                {isExportingToDocs ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 text-blue-600 animate-spin" />
+                    <span>Đang xuất sang Google Docs...</span>
+                  </>
+                ) : (
+                  <>
+                    <FileText className="w-4 h-4 text-blue-600" />
+                    <span>Xuất Nhận Xét Sang Google Docs</span>
+                  </>
+                )}
+              </button>
+
+              {exportedDocUrl && (
+                <a
+                  href={exportedDocUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 px-3.5 py-2 rounded-xl transition flex items-center gap-1.5 shadow-xs"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                  <span>Mở Google Docs ↗</span>
+                </a>
+              )}
+
               <button
                 type="button"
                 onClick={() => setIsWritingCriteriaModalOpen(true)}
@@ -885,6 +1110,26 @@ export const TestBankView: React.FC<TestBankViewProps> = ({ initialSkill = 'ALL'
               </button>
             </div>
           </div>
+
+          {exportDocSuccess && (
+            <div className="p-3 bg-blue-50 border border-blue-200 rounded-2xl flex items-center justify-between gap-3 text-xs text-blue-900 animate-fade-in">
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-blue-600 shrink-0" />
+                <span>{exportDocSuccess}</span>
+              </div>
+              {exportedDocUrl && (
+                <a
+                  href={exportedDocUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-bold underline text-blue-700 hover:text-blue-900 shrink-0 flex items-center gap-1"
+                >
+                  <span>Truy cập tài liệu ngay</span>
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
+              )}
+            </div>
+          )}
 
           {/* Full Exam Sub-Tabs Switcher */}
           {submissionResult.full_exam && submissionResult.result && (
@@ -1114,6 +1359,14 @@ export const TestBankView: React.FC<TestBankViewProps> = ({ initialSkill = 'ALL'
                   <>Estimated Band Score: <span className="text-emerald-600 font-black text-3xl">{submissionResult.band_score}</span> / 9.0</>
                 )}
               </h2>
+              {submissionResult.earned_coins && (
+                <div className="mt-2 inline-flex items-center gap-2 bg-gradient-to-r from-amber-50 to-emerald-50 border border-amber-300 text-amber-950 px-3 py-1.5 rounded-xl text-xs font-bold shadow-2xs">
+                  <Coins className="w-4 h-4 text-amber-600 shrink-0" />
+                  <span>
+                    +{submissionResult.earned_coins.amount_added} Xu thưởng ({submissionResult.earned_coins.base_amount} gốc + {submissionResult.earned_coins.bonus_amount} thưởng Band) • Số dư hiện tại: {submissionResult.earned_coins.current_balance} Xu
+                  </span>
+                </div>
+              )}
             </div>
             <div className="flex items-center gap-4">
               <div className="text-right">
@@ -1434,47 +1687,101 @@ export const TestBankView: React.FC<TestBankViewProps> = ({ initialSkill = 'ALL'
       ) : (
         /* STANDARD READING / LISTENING COMPUTER-DELIVERED VIEW */
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 h-[calc(100vh-270px)] min-h-[550px]">
-          {/* Left Pane: Current Passage */}
+          {/* Left Pane: Current Passage or Listening Audio Player */}
           <div className="bg-white border border-slate-200/80 rounded-3xl p-6 overflow-y-auto space-y-4 shadow-sm">
-            <div className="space-y-4">
-              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                <div>
-                  <h3 className="text-base font-extrabold text-slate-900">{currentSection?.title}</h3>
-                  <span className="text-xs text-slate-400 font-medium">
-                    {sections.length > 1 ? `Passage ${activeSectionIndex + 1} / ${sections.length}` : 'Section Practice'}
-                  </span>
-                </div>
-                {activeTest.skill_type === 'READING' && (
-                  <button
-                    type="button"
-                    onClick={() => setIsScoreTableModalOpen(true)}
-                    className="text-[11px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2.5 py-1 rounded-xl transition cursor-pointer flex items-center gap-1 shadow-2xs"
-                    title="Tra cứu bảng quy đổi số câu đúng sang Band điểm IELTS Reading"
-                  >
-                    <HelpCircle className="w-3.5 h-3.5" />
-                    <span>Bảng quy đổi Band</span>
-                  </button>
+            {activeTest.skill_type === 'LISTENING' ? (
+              <div className="space-y-4">
+                {/* Section Navigation Tabs for Listening */}
+                {sections.length > 1 && !isSingleSectionPractice && (
+                  <div className="flex items-center gap-2 bg-slate-100/90 p-1.5 rounded-2xl border border-slate-200 overflow-x-auto">
+                    {sections.map((sec, idx) => {
+                      const isAct = idx === activeSectionIndex;
+                      const secQCount = sec.questions?.length || 10;
+                      const hasAudio = !!sec.audio_url;
+                      return (
+                        <button
+                          key={sec.id || idx}
+                          type="button"
+                          onClick={() => setActiveSectionIndex(idx)}
+                          className={`flex-1 min-w-[125px] py-2 px-3 rounded-xl text-xs font-bold transition flex items-center justify-between gap-1.5 cursor-pointer ${
+                            isAct
+                              ? 'bg-emerald-600 text-white shadow-sm'
+                              : 'bg-transparent text-slate-600 hover:bg-slate-200/80'
+                          }`}
+                        >
+                          <div className="flex items-center gap-1.5 truncate">
+                            <Volume2 className="w-3.5 h-3.5 shrink-0" />
+                            <span>Sec {idx + 1}</span>
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0">
+                            {hasAudio && (
+                              <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold ${
+                                isAct ? 'bg-emerald-800 text-emerald-100' : 'bg-emerald-100 text-emerald-800'
+                              }`} title="Đã có file audio MP3 gốc">
+                                MP3
+                              </span>
+                            )}
+                            <span className={`text-[10px] px-1.5 py-0.2 rounded-md ${isAct ? 'bg-emerald-700/90 text-white' : 'bg-slate-200 text-slate-600'}`}>
+                              {secQCount}q
+                            </span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
                 )}
-              </div>
 
-              {currentSection?.audio_url && (
-                <div className="p-3 bg-emerald-50 rounded-2xl flex items-center gap-3 border border-emerald-200 text-emerald-800">
-                  <Volume2 className="w-5 h-5 text-emerald-600" />
-                  <span className="text-xs font-bold">Audio Script - IELTS Listening Audio Recording</span>
+                {/* Main Listening Audio Player */}
+                <ListeningTestPlayer
+                  sectionTitle={currentSection?.title || `Section ${activeSectionIndex + 1}`}
+                  sectionNumber={currentSection?.order_index || activeSectionIndex + 1}
+                  testId={activeTest.id}
+                  sectionId={currentSection?.id}
+                  audioUrl={currentSection?.audio_url}
+                  durationSeconds={currentSection?.duration_seconds || 360}
+                  transcriptLines={currentSection?.transcript_lines || []}
+                  seekToTimestamp={activeSeekTimestamp}
+                  onAudioUploaded={(newUrl) => {
+                    setSections(prev => prev.map(s => s.id === currentSection?.id ? { ...s, audio_url: newUrl } : s));
+                  }}
+                  isSimulationMode={mode === 'SIMULATION'}
+                  isSubmitted={!!submissionResult || isSubmitting}
+                />
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                  <div>
+                    <h3 className="text-base font-extrabold text-slate-900">{currentSection?.title}</h3>
+                    <span className="text-xs text-slate-400 font-medium">
+                      {sections.length > 1 ? `Passage ${activeSectionIndex + 1} / ${sections.length}` : 'Section Practice'}
+                    </span>
+                  </div>
+                  {activeTest.skill_type === 'READING' && (
+                    <button
+                      type="button"
+                      onClick={() => setIsScoreTableModalOpen(true)}
+                      className="text-[11px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2.5 py-1 rounded-xl transition cursor-pointer flex items-center gap-1 shadow-2xs"
+                      title="Tra cứu bảng quy đổi số câu đúng sang Band điểm IELTS Reading"
+                    >
+                      <HelpCircle className="w-3.5 h-3.5" />
+                      <span>Bảng quy đổi Band</span>
+                    </button>
+                  )}
                 </div>
-              )}
 
-              <div className="text-sm text-slate-800 leading-relaxed font-serif whitespace-pre-line bg-slate-50/70 p-5 rounded-2xl border border-slate-200 selection:bg-emerald-200">
-                {currentSection?.content_passage}
+                <div className="text-sm text-slate-800 leading-relaxed font-serif whitespace-pre-line bg-slate-50/70 p-5 rounded-2xl border border-slate-200 selection:bg-emerald-200">
+                  {currentSection?.content_passage}
+                </div>
               </div>
-            </div>
+            )}
           </div>
 
           {/* Right Pane: Questions & Explanations */}
           <div className="bg-white border border-slate-200/80 rounded-3xl p-6 overflow-y-auto space-y-6 shadow-sm">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-                {currentSection?.title?.split(':')[0] || `Passage ${activeSectionIndex + 1}`} Questions ({currentQuestions.length} câu)
+                {currentSection?.title?.split(':')[0] || `Section ${activeSectionIndex + 1}`} Questions ({currentQuestions.length} câu)
               </h3>
               <span className="text-xs text-slate-500 font-medium">
                 Đã làm: {currentQuestions.filter(q => !!userAnswers[q.id]).length} / {currentQuestions.length}
@@ -1562,13 +1869,30 @@ export const TestBankView: React.FC<TestBankViewProps> = ({ initialSkill = 'ALL'
 
                     {/* Detailed Explanation upon submission */}
                     {evalInfo && (
-                      <div className="mt-4 pt-3 border-t border-slate-200 text-xs space-y-1.5">
-                        <p className="text-emerald-800 font-bold">
-                          Đáp án đúng: <span className="bg-emerald-100 text-emerald-900 px-2 py-0.5 rounded-md">{q.correct_answer}</span>
-                        </p>
-                        <div className="text-slate-700 leading-relaxed bg-white/80 p-3 rounded-xl border border-slate-200/80">
-                          <strong className="text-emerald-800">Giải thích chi tiết & Trích dẫn: </strong>
-                          {q.explanation_text}
+                      <div className="mt-4 pt-3 border-t border-slate-200 text-xs space-y-2">
+                        <div className="flex items-center justify-between flex-wrap gap-2">
+                          <p className="text-emerald-800 font-bold">
+                            Đáp án đúng: <span className="bg-emerald-100 text-emerald-900 px-2 py-0.5 rounded-md font-mono">{q.correct_answer}</span>
+                          </p>
+                          {activeTest.skill_type === 'LISTENING' && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const timeMatch = q.explanation_text?.match(/\b(\d{1,2}:\d{2})\b/);
+                                const ts = (q as any).audio_timestamp || (timeMatch ? timeMatch[1] : '00:00');
+                                const sec = parseTimestampToSeconds(ts);
+                                setActiveSeekTimestamp(sec);
+                              }}
+                              className="inline-flex items-center gap-1.5 text-[11px] font-extrabold text-emerald-800 bg-emerald-100 hover:bg-emerald-200 border border-emerald-300 px-2.5 py-1 rounded-xl transition cursor-pointer shadow-2xs"
+                            >
+                              <Volume2 className="w-3.5 h-3.5 text-emerald-700" />
+                              <span>Nghe lại đoạn trích dẫn</span>
+                            </button>
+                          )}
+                        </div>
+                        <div className="text-slate-700 leading-relaxed bg-white/90 p-3 rounded-xl border border-slate-200/80 space-y-1">
+                          <strong className="text-emerald-800 block">Giải thích chi tiết & Trích dẫn Audio:</strong>
+                          <p className="whitespace-pre-line">{q.explanation_text}</p>
                         </div>
                       </div>
                     )}
@@ -1706,6 +2030,12 @@ export const TestBankView: React.FC<TestBankViewProps> = ({ initialSkill = 'ALL'
           </div>
         </div>
       )}
+
+      {/* IELTS Listening Band Score Scale Modal */}
+      <ListeningScoreTableModal
+        isOpen={isListeningScoreModalOpen}
+        onClose={() => setIsListeningScoreModalOpen(false)}
+      />
     </div>
   );
 };

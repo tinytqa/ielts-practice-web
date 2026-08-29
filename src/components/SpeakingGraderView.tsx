@@ -3,8 +3,11 @@ import {
   Mic, Square, Play, Pause, Sparkles, Volume2, Clock, 
   RotateCcw, AlertCircle, CheckCircle2, ChevronRight, BookOpen, 
   Lightbulb, Copy, HelpCircle, ArrowRight, ArrowLeft, Award, Layers, Check,
-  X, Info, FileText, Lock, Radio, User, FastForward, RefreshCw, VolumeX, ShieldAlert, Zap
+  X, Info, FileText, Lock, Radio, User, FastForward, RefreshCw, VolumeX, ShieldAlert, Zap,
+  Video, ExternalLink, Users, PhoneCall, Share2
 } from 'lucide-react';
+import { createGoogleMeetSpace } from '../lib/googleWorkspace';
+import { googleSignIn, getAccessToken } from '../lib/firebaseAuth';
 
 export interface SpeakingPartData {
   part: 'PART_1' | 'PART_2' | 'PART_3';
@@ -402,6 +405,46 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
   const [simSilenceCountdown, setSimSilenceCountdown] = useState<number | null>(null);
   const [autoAdvanceSilence, setAutoAdvanceSilence] = useState<boolean>(true);
   const [isSimPaused, setIsSimPaused] = useState<boolean>(false);
+  
+  // Google Meet 1-on-1 Practice States
+  const [isCreatingMeet, setIsCreatingMeet] = useState<boolean>(false);
+  const [createdMeetSpace, setCreatedMeetSpace] = useState<{ spaceName: string; meetingUri: string; meetingCode: string } | null>(null);
+  const [showMeetModal, setShowMeetModal] = useState<boolean>(false);
+  const [isCopiedMeetLink, setIsCopiedMeetLink] = useState<boolean>(false);
+
+  const handleCreateGoogleMeet = async () => {
+    setIsCreatingMeet(true);
+    try {
+      let token = await getAccessToken();
+      if (!token) {
+        const signInRes = await googleSignIn();
+        token = signInRes?.accessToken || null;
+      }
+      if (!token) {
+        throw new Error('Vui lòng cấp quyền kết nối tài khoản Google để tạo phòng Meet.');
+      }
+
+      const meet = await createGoogleMeetSpace(token);
+      setCreatedMeetSpace(meet);
+      setShowMeetModal(true);
+    } catch (err: any) {
+      console.error("Google Meet creation error:", err);
+      alert(`Không thể tạo phòng Google Meet: ${err.message || err}`);
+    } finally {
+      setIsCreatingMeet(false);
+    }
+  };
+
+  const handleCopyMeetLink = async () => {
+    if (!createdMeetSpace?.meetingUri) return;
+    try {
+      await navigator.clipboard.writeText(createdMeetSpace.meetingUri);
+      setIsCopiedMeetLink(true);
+      setTimeout(() => setIsCopiedMeetLink(false), 3000);
+    } catch (e) {
+      console.warn("Could not copy link:", e);
+    }
+  };
   
   // Accumulated answers per question for structured transcripts
   const simQuestionAnswersRef = useRef<{
@@ -1060,6 +1103,27 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
 
           {/* Mode & Timer Header */}
           <div className="flex flex-wrap items-center gap-2.5">
+            {/* Google Meet 1-1 Practice Button */}
+            <button
+              type="button"
+              onClick={handleCreateGoogleMeet}
+              disabled={isCreatingMeet}
+              className="px-3.5 py-1.5 rounded-2xl bg-blue-50 hover:bg-blue-100 text-blue-900 border border-blue-300 text-xs font-extrabold transition cursor-pointer flex items-center gap-1.5 shadow-2xs disabled:opacity-50"
+              title="Tạo phòng Google Meet để luyện Speaking 1-1 cùng bạn học hoặc giáo viên"
+            >
+              {isCreatingMeet ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 text-blue-600 animate-spin" />
+                  <span>Đang tạo Meet...</span>
+                </>
+              ) : (
+                <>
+                  <Video className="w-3.5 h-3.5 text-blue-600" />
+                  <span>Tạo Phòng Google Meet (1-1)</span>
+                </>
+              )}
+            </button>
+
             {/* View Official Band Descriptors Rubric Button */}
             <button
               type="button"
@@ -2451,6 +2515,132 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
                 className="px-5 py-2 rounded-xl bg-slate-900 text-white font-bold text-xs hover:bg-slate-800 transition cursor-pointer"
               >
                 Đóng
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* GOOGLE MEET 1-1 SPEAKING PRACTICE MODAL */}
+      {showMeetModal && createdMeetSpace && (
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div className="bg-white rounded-3xl max-w-2xl w-full p-6 space-y-5 shadow-2xl border border-slate-200">
+            {/* Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-blue-50 border border-blue-200 flex items-center justify-center text-blue-600">
+                  <Video className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-extrabold text-slate-900">Phòng Google Meet Luyện Speaking 1-1</h3>
+                  <p className="text-xs text-slate-500">Phòng họp trực tuyến chuẩn Google Workspace</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowMeetModal(false)}
+                className="p-2 text-slate-400 hover:text-slate-600 rounded-xl cursor-pointer text-xs font-bold"
+              >
+                ✕ Đóng
+              </button>
+            </div>
+
+            {/* Meet Space Info Box */}
+            <div className="bg-gradient-to-br from-blue-50 via-indigo-50/40 to-slate-50 border border-blue-200 rounded-2xl p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-extrabold text-blue-900 uppercase tracking-wider flex items-center gap-1.5">
+                  <Users className="w-4 h-4 text-blue-600" />
+                  Link Tham Gia Phòng Họp:
+                </span>
+                <span className="text-[11px] font-mono font-bold text-slate-500 bg-white/80 px-2 py-0.5 rounded border border-blue-200">
+                  Mã: {createdMeetSpace.meetingCode}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between gap-2 bg-white p-3 rounded-xl border border-blue-200 shadow-2xs">
+                <span className="font-mono text-xs font-bold text-blue-700 truncate select-all">
+                  {createdMeetSpace.meetingUri}
+                </span>
+                <button
+                  onClick={handleCopyMeetLink}
+                  className="shrink-0 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-800 text-xs font-extrabold rounded-lg border border-blue-300 transition cursor-pointer flex items-center gap-1"
+                >
+                  {isCopiedMeetLink ? (
+                    <>
+                      <Check className="w-3.5 h-3.5 text-blue-600" />
+                      <span>Đã chép!</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3.5 h-3.5 text-blue-600" />
+                      <span>Sao chép</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3 pt-1">
+                <a
+                  href={createdMeetSpace.meetingUri}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs rounded-xl shadow-md transition flex items-center gap-2"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                  <span>Vào Phòng Google Meet Ngay ↗</span>
+                </a>
+
+                <button
+                  onClick={handleCopyMeetLink}
+                  className="px-4 py-2.5 bg-white hover:bg-slate-50 text-slate-800 font-bold text-xs rounded-xl border border-slate-300 transition cursor-pointer flex items-center gap-1.5"
+                >
+                  <Share2 className="w-3.5 h-3.5 text-slate-600" />
+                  <span>Gửi link cho bạn học / Giáo viên</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Prompt Cue Card for Meeting Sync */}
+            <div className="space-y-2">
+              <label className="text-xs font-extrabold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
+                Chủ Đề & Câu Hỏi Đang Luyện (Dùng trực tiếp trong phòng Meet):
+              </label>
+
+              <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 text-xs space-y-2 max-h-48 overflow-y-auto">
+                <div className="font-extrabold text-slate-900 flex items-center gap-2">
+                  <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-mono uppercase">
+                    {currentData.part}
+                  </span>
+                  <span>{currentData.topic} - {currentData.subTitle}</span>
+                </div>
+
+                {currentData.cueCard ? (
+                  <div className="space-y-1 bg-white p-3 rounded-xl border border-slate-200 text-slate-700">
+                    <strong className="block text-slate-900">{currentData.cueCard.topic}</strong>
+                    <ul className="list-disc list-inside text-[11px] space-y-0.5">
+                      {currentData.cueCard.bulletPoints.map((bp, i) => (
+                        <li key={i}>{bp}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : (
+                  <ol className="list-decimal list-inside text-[11px] text-slate-700 space-y-1 bg-white p-3 rounded-xl border border-slate-200">
+                    {currentData.questions?.map((q, i) => (
+                      <li key={i} className="leading-relaxed font-medium">{q}</li>
+                    ))}
+                  </ol>
+                )}
+              </div>
+            </div>
+
+            {/* Modal Actions */}
+            <div className="flex items-center justify-end pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setShowMeetModal(false)}
+                className="px-5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 font-extrabold text-xs rounded-xl transition cursor-pointer"
+              >
+                Đóng Cửa Sổ
               </button>
             </div>
           </div>

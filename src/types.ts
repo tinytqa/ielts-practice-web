@@ -218,6 +218,62 @@ export interface LeaderboardItem {
   avg_band: number;
   total_score: number;
   is_current_user?: boolean;
+  reward_coins?: number;
+  reward_title?: string;
+}
+
+export interface LeaderboardScoringRule {
+  activity: string;
+  base_points: string;
+  bonus_points: string;
+  note: string;
+}
+
+export interface TopRankReward {
+  rank: number;
+  title: string;
+  coins: number;
+  voucher_bonus: string;
+  badge: string;
+}
+
+export interface LeaderboardConfig {
+  month_label: string;
+  reset_cycle: string;
+  top_rewards: {
+    top_1: TopRankReward;
+    top_2: TopRankReward;
+    top_3: TopRankReward;
+  };
+  formula_summary: string;
+  scoring_rules: LeaderboardScoringRule[];
+}
+
+export interface RemedialQuestion {
+  id: string;
+  scenario_type?: string; // e.g. "IELTS Writing Task 2 - Essay Excerpt", "IELTS Writing Task 1 - Trend Analysis", "Speaking Part 3 - Discussion"
+  context_passage?: string; // Rich academic context paragraph containing the test sentence or blank [___]
+  question: string;
+  options: string[];
+  correct_index: number;
+  explanation: string;
+  trap_mechanism?: string; // Analysis of why the distractors are tempting and what similar trap they test
+  pro_tip?: string;
+  rule_category: string;
+  target_error_snippet: string;
+  target_error_pattern?: string;
+  original_mistake?: string;
+  suggested_fix?: string;
+}
+
+export interface RemedialExam {
+  test_id: string;
+  title: string;
+  description: string;
+  target_band_focus: string;
+  total_questions: number;
+  time_limit_minutes: number;
+  questions: RemedialQuestion[];
 }
 
 export interface UserStats {
@@ -230,7 +286,77 @@ export interface UserStats {
     speaking: number;
   };
   total_attempts: number;
+  has_completed_tests?: boolean;
   streak_days: number;
   credits: number;
   frequent_errors: { tag_code: string; name: string; count: number }[];
 }
+
+export interface CoinTransaction {
+  id: string;
+  user_id: string;
+  amount: number;
+  base_amount?: number;
+  bonus_amount?: number;
+  balance_after?: number;
+  reason: string;
+  source_type: string;
+  details_json?: string;
+  created_at: string;
+}
+
+export interface CoinRewardRule {
+  label: string;
+  coins: string;
+  desc: string;
+}
+
+export interface CoinRewardRuleCategory {
+  category: string;
+  icon: string;
+  badge: string;
+  rules: CoinRewardRule[];
+}
+
+export interface CoinRewardEvent {
+  amount: number;
+  base_amount: number;
+  bonus_amount: number;
+  new_balance: number;
+  reason: string;
+  source_type: string;
+}
+
+export interface RewardItem {
+  id: string;
+  title: string;
+  category: 'COURSE_DISCOUNT' | 'BOOKSTORE_VOUCHER' | 'MOCK_TEST_EXAM' | 'COACHING' | string;
+  partner_name: string;
+  discount_label: string;
+  cost_coins: number;
+  original_value?: string;
+  description: string;
+  terms: string;
+  image_tag: string;
+  badge?: string;
+  stock: number;
+  code_prefix: string;
+}
+
+export interface UserRedeemedVoucher {
+  id: string;
+  user_id: string;
+  reward_item_id: string;
+  reward_title: string;
+  partner_name: string;
+  discount_label: string;
+  cost_coins: number;
+  voucher_code: string;
+  status: 'ACTIVE' | 'USED' | 'EXPIRED';
+  instructions: string;
+  expires_at: string;
+  created_at: string;
+}
+
+
+

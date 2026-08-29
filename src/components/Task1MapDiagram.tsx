@@ -1,81 +1,20 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React from 'react';
 import { 
-  ZoomIn, ZoomOut, Maximize2, Image as ImageIcon, Sparkles, 
-  MapPin, Compass, Upload, X, RotateCcw, Check, Eye
+  Compass
 } from 'lucide-react';
 
 interface Task1MapDiagramProps {
   customImageUrl?: string;
-  onCustomImageChange?: (url: string) => void;
 }
 
 export const Task1MapDiagram: React.FC<Task1MapDiagramProps> = ({
-  customImageUrl: propCustomImageUrl,
-  onCustomImageChange
+  customImageUrl
 }) => {
-  const [zoomLevel, setZoomLevel] = useState<'normal' | 'large'>('normal');
-  const [viewMode, setViewMode] = useState<'side-by-side' | 'stacked'>('stacked');
-  const [userUploadedImage, setUserUploadedImage] = useState<string>(() => {
-    return localStorage.getItem('ielts_task1_custom_map_image') || '';
-  });
-  const [isLightboxOpen, setIsLightboxOpen] = useState<boolean>(false);
-  const [isDragOver, setIsDragOver] = useState<boolean>(false);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-
-  const activeImage = propCustomImageUrl || userUploadedImage;
-
-  const handleImageLoaded = (base64Url: string) => {
-    setUserUploadedImage(base64Url);
-    localStorage.setItem('ielts_task1_custom_map_image', base64Url);
-    if (onCustomImageChange) {
-      onCustomImageChange(base64Url);
-    }
-  };
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = () => {
-        if (typeof reader.result === 'string') {
-          handleImageLoaded(reader.result);
-        }
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file && file.type.startsWith('image/')) {
-      const reader = new FileReader();
-      reader.onload = () => {
-        if (typeof reader.result === 'string') {
-          handleImageLoaded(reader.result);
-        }
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
-  const handleClearCustomImage = () => {
-    setUserUploadedImage('');
-    localStorage.removeItem('ielts_task1_custom_map_image');
-    if (onCustomImageChange) {
-      onCustomImageChange('');
-    }
-  };
-
   return (
     <div 
       className="bg-white border-2 border-slate-300 rounded-3xl p-4 sm:p-5 shadow-sm space-y-4 text-slate-900"
-      onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
-      onDragLeave={() => setIsDragOver(false)}
-      onDrop={handleDrop}
     >
-      {/* Header with Title & Action Controls */}
+      {/* Header with Title */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 pb-3">
         <div className="flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-xl bg-emerald-100 border border-emerald-300 flex items-center justify-center text-emerald-800">
@@ -90,65 +29,14 @@ export const Task1MapDiagram: React.FC<Task1MapDiagramProps> = ({
             </p>
           </div>
         </div>
-
-        {/* Action Controls */}
-        <div className="flex items-center gap-2 shrink-0">
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="px-2.5 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-bold flex items-center gap-1.5 transition border border-emerald-200 cursor-pointer shadow-2xs"
-            title="Tải lên ảnh bản đồ từ máy tính"
-          >
-            <Upload className="w-3.5 h-3.5" />
-            <span>{activeImage ? 'Đổi Ảnh Khác' : 'Tải Ảnh Lên'}</span>
-          </button>
-
-          <input 
-            type="file" 
-            ref={fileInputRef} 
-            onChange={handleFileChange} 
-            accept="image/*" 
-            className="hidden" 
-          />
-
-          {activeImage && (
-            <button
-              type="button"
-              onClick={handleClearCustomImage}
-              className="px-2 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-medium flex items-center gap-1 transition cursor-pointer"
-              title="Khôi phục sơ đồ đồ họa chuẩn"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-              <span>Sơ đồ gốc</span>
-            </button>
-          )}
-
-          <button
-            type="button"
-            onClick={() => setIsLightboxOpen(true)}
-            className="px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold flex items-center gap-1.5 transition border border-slate-200 cursor-pointer"
-            title="Xem toàn màn hình"
-          >
-            <Maximize2 className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Phóng to</span>
-          </button>
-        </div>
       </div>
 
-      {/* Main Diagram View (If User Uploaded Image is Active) */}
-      {activeImage ? (
+      {/* Main Diagram View (If Custom Image is Provided or Vector Map) */}
+      {customImageUrl ? (
         <div className="relative rounded-2xl overflow-hidden border-2 border-slate-300 bg-slate-50 flex flex-col items-center justify-center p-3">
-          <div className="w-full flex items-center justify-between pb-2 mb-2 border-b border-slate-200 text-[11px] text-slate-500">
-            <span className="font-bold text-emerald-700 flex items-center gap-1">
-              <Check className="w-3.5 h-3.5 text-emerald-600" />
-              Ảnh bản đồ chính thức của bạn đã được gắn thành công
-            </span>
-            <span className="text-slate-400">Kéo thả ảnh khác vào khung bất cứ lúc nào</span>
-          </div>
-
           <div className="relative max-h-[520px] w-full flex items-center justify-center overflow-auto rounded-xl bg-white p-2">
             <img
-              src={activeImage}
+              src={customImageUrl}
               alt="The maps below show recent archaeological findings at a historic site in 2004 and 2014"
               className="max-h-[480px] w-auto object-contain rounded-lg border border-slate-200 shadow-sm hover:scale-105 transition-transform duration-200"
               referrerPolicy="no-referrer"
@@ -403,62 +291,6 @@ export const Task1MapDiagram: React.FC<Task1MapDiagramProps> = ({
                 </div>
               </div>
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* Lightbox Modal */}
-      {isLightboxOpen && (
-        <div className="fixed inset-0 bg-slate-950/90 z-50 flex flex-col items-center justify-center p-4">
-          <div className="w-full max-w-4xl bg-white rounded-3xl p-6 relative flex flex-col items-center shadow-2xl max-h-[90vh] overflow-y-auto">
-            <div className="w-full flex items-center justify-between border-b border-slate-200 pb-3 mb-4">
-              <h3 className="font-extrabold text-slate-900 text-sm">
-                Bản Đồ IELTS Writing Task 1 (Phóng To Toàn Màn Hình)
-              </h3>
-              <button
-                onClick={() => setIsLightboxOpen(false)}
-                className="p-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {activeImage ? (
-              <img
-                src={activeImage}
-                alt="IELTS Map Enlarged"
-                className="max-h-[70vh] w-auto object-contain rounded-xl"
-                referrerPolicy="no-referrer"
-              />
-            ) : (
-              <div className="w-full space-y-4">
-                <p className="text-center font-bold text-slate-900 text-base">
-                  The maps below show recent archaeological findings at a historic site in 2004 and 2014.
-                </p>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="p-4 border-2 border-black rounded-xl bg-white text-center">
-                    <h6 className="font-extrabold text-sm mb-3">Historic site in 2004</h6>
-                    <div className="text-xs text-slate-700 text-left space-y-1 bg-slate-50 p-3 rounded-lg border border-slate-200">
-                      <p>• <strong>West:</strong> Cluster of dense green trees.</p>
-                      <p>• <strong>North:</strong> Mountain range with sharp peaks.</p>
-                      <p>• <strong>Northeast:</strong> 2 Ancient Houses.</p>
-                      <p>• <strong>East:</strong> Ancient Temple standing on the coast next to the Sea.</p>
-                    </div>
-                  </div>
-                  <div className="p-4 border-2 border-black rounded-xl bg-white text-center">
-                    <h6 className="font-extrabold text-sm mb-3">Historic site in 2014</h6>
-                    <div className="text-xs text-slate-700 text-left space-y-1 bg-slate-50 p-3 rounded-lg border border-slate-200">
-                      <p>• <strong>Northwest:</strong> Ancient Stadium (excavated where trees were).</p>
-                      <p>• <strong>North:</strong> Ancient Toilet (mountains cleared).</p>
-                      <p>• <strong>Northeast:</strong> Expanded cluster of 9 Ancient Houses.</p>
-                      <p>• <strong>South-Center:</strong> Ancient Palace with dome and colonnades.</p>
-                      <p>• <strong>Southwest:</strong> Smaller group of trees relocated near compass.</p>
-                      <p>• <strong>East:</strong> Ancient Temple preserved in its original location.</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
           </div>
         </div>
       )}

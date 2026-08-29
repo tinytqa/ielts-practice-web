@@ -827,19 +827,18 @@ export async function lookupVocabDetails(word: string) {
 
 export async function generateQuizizzFromFile(fileBuffer: Buffer, mimeType: string, originalName: string) {
   const systemInstruction = `
-You are an expert Quizizz Game Content Creator for IELTS vocabulary and OCR Document Processor.
-Analyze the provided document, image, or text file (performing OCR if an image, photo of textbook/handwriting, or scanned document).
-Your goal:
-1. Perform high-accuracy OCR to extract text from images/PDFs/documents.
-2. Extract key English vocabulary words, collocations, or academic phrases found in the document along with their IPA, Vietnamese meanings, and an example sentence.
-3. Create 8 high-impact multiple-choice Quizizz questions testing those extracted words.
+You are an expert Quiz Game Content Creator for IELTS vocabulary and advanced OCR Document Processor.
+Analyze the provided document, image, or text file (performing precise OCR if an image, textbook snapshot, handwriting, or scanned document).
 
-Requirements:
-- Questions must cover vocabulary directly present in or derived from the uploaded file.
-- Question types should be varied (meaning identification, fill-in-blank, reverse definition, collocation).
-- Each question MUST have exactly 4 options and correct_index (0..3).
-- Provide a clear, short Vietnamese explanation.
-- Return extracted_words array containing items with { word, ipa, meaning_vi, example_sentence }.
+Your tasks:
+1. Accurate OCR Extraction: Extract 8 to 15 UNIQUE, DISTINCT English vocabulary words, collocations, or academic expressions found in or directly relevant to the document.
+   - CRITICAL: Strictly NO duplicate or repeated words in "extracted_words". Every word in the list must be a distinct vocabulary item.
+   - For each word, provide accurate IPA, precise Vietnamese meaning (meaning_vi), and a realistic example sentence (example_sentence).
+2. Generate EXACTLY 8 distinct multiple-choice Quiz questions:
+   - CRITICAL: Each of the 8 questions MUST test a DIFFERENT, UNIQUE word from the "extracted_words" list (Question 1 tests Word 1, Question 2 tests Word 2, ..., Question 8 tests Word 8).
+   - The "word_target" property for each question must strictly match the unique word being tested.
+   - Varied question styles: (1) Word to Vietnamese meaning, (2) Vietnamese meaning to Word, (3) Fill-in-the-blank in an academic context sentence, (4) Collocation selection.
+   - Each question must provide 4 distinct plausible options (options), correct_index (0..3), and a clear Vietnamese explanation.
 
 Respond strictly in valid JSON matching the schema.
 `;
@@ -855,7 +854,7 @@ Respond strictly in valid JSON matching the schema.
         }
       },
       {
-        text: `Please read and analyze this uploaded file "${originalName}" using OCR. Extract key English vocabulary words and generate 8 Quizizz questions based on them.`
+        text: `Please perform OCR on this uploaded file "${originalName}". Extract 8-15 UNIQUE vocabulary items and create 8 corresponding Quiz questions testing 8 different words.`
       }
     ];
   } else {
@@ -863,7 +862,7 @@ Respond strictly in valid JSON matching the schema.
     const rawText = fileBuffer.toString('utf-8');
     userContents = [
       {
-        text: `Filename: ${originalName}\nFile Content:\n"""\n${rawText.slice(0, 10000)}\n"""\n\nPlease analyze this text content, extract key English vocabulary words/phrases, and generate 8 Quizizz questions.`
+        text: `Filename: ${originalName}\nFile Content:\n"""\n${rawText.slice(0, 10000)}\n"""\n\nPlease analyze this text content, extract 8-15 UNIQUE English vocabulary words/phrases, and generate 8 Quiz questions testing 8 distinct words.`
       }
     ];
   }
@@ -912,11 +911,49 @@ Respond strictly in valid JSON matching the schema.
       }
     });
 
-    return JSON.parse(response.text || "{}");
+    const parsed = JSON.parse(response.text || "{}");
+
+    // Post-process & sanitize: strictly deduplicate extracted_words
+    const seenWords = new Set<string>();
+    const sanitizedExtractedWords: any[] = [];
+
+    for (const item of (parsed.extracted_words || [])) {
+      const cleanWord = (item.word || '').trim();
+      const lowerKey = cleanWord.toLowerCase();
+      if (cleanWord.length > 1 && !seenWords.has(lowerKey)) {
+        seenWords.add(lowerKey);
+        sanitizedExtractedWords.push({
+          word: cleanWord,
+          ipa: (item.ipa || '').trim(),
+          meaning_vi: (item.meaning_vi || '').trim(),
+          example_sentence: (item.example_sentence || '').trim()
+        });
+      }
+    }
+
+    // If extracted_words missed some words tested in questions, backfill them
+    if (parsed.questions && Array.isArray(parsed.questions)) {
+      for (const q of parsed.questions) {
+        const targetWord = (q.word_target || '').trim();
+        const lowerKey = targetWord.toLowerCase();
+        if (targetWord.length > 1 && !seenWords.has(lowerKey)) {
+          seenWords.add(lowerKey);
+          sanitizedExtractedWords.push({
+            word: targetWord,
+            ipa: '',
+            meaning_vi: q.explanation ? q.explanation.slice(0, 80) : 'Từ vựng trọng tâm',
+            example_sentence: q.question || ''
+          });
+        }
+      }
+    }
+
+    parsed.extracted_words = sanitizedExtractedWords;
+    return parsed;
   } catch (error) {
-    console.error("Gemini File OCR Quizizz Generation Error:", error);
+    console.error("Gemini File OCR Quiz Generation Error:", error);
     return {
-      title: `Bộ Quizizz từ tài liệu: ${originalName}`,
+      title: `Bộ Quiz từ tài liệu: ${originalName}`,
       extracted_words: [
         { word: "comprehension", ipa: "/ˌkɒmprɪˈhenʃn/", meaning_vi: "sự hiểu biết, khả năng đọc hiểu", example_sentence: "Reading comprehension requires active engagement." }
       ],
@@ -1178,4 +1215,501 @@ Return strictly valid JSON matching the schema.
     };
   }
 }
+
+export async function generateRemedialExamFromErrors(
+  errorsList: any[],
+  questionCount: number = 10,
+  targetBandFocus: string = 'Band 7.0',
+  scopeDescription: string = 'Tổng hợp các lỗi sai ghi nhận'
+) {
+  // Format past errors into a concise reference string
+  const formattedErrors = errorsList && errorsList.length > 0
+    ? errorsList.slice(0, 25).map((e, idx) => `[Lỗi ${idx + 1}] (${e.source_type || 'GENERAL'} - ${e.error_tag_name || e.error_tag_code || 'Lỗi chung'}):
+- Câu/Từ sai của học viên trong quá khứ: "${e.original_text || ''}"
+- Cách sửa chuẩn: "${e.corrected_text || ''}"
+- Bản chất lỗi & Giải thích: ${e.explanation || ''}
+- Nguồn bài: ${e.source_title || 'Bài tập IELTS'}`).join('\n\n')
+    : `Học viên có các lỗi tiêu biểu trong IELTS Writing & Speaking:
+1. Nhầm lẫn thì quá khứ đơn (Past Simple) với hiện tại đơn khi mô tả xu hướng số liệu trong quá khứ ở Task 1.
+2. Lỗi Subject-Verb Agreement khi chủ ngữ và vị ngữ bị ngăn cách bởi cụm giới từ dài hoặc danh từ không đếm được (e.g., research, information, access to resources).
+3. Sử dụng collocation gượng gạo hoặc dịch thô từ tiếng Việt (e.g., make a harm, solve the problem by doing, pay attention about).
+4. Lỗi Run-on sentence hoặc dùng sai dấu câu khi liên kết bằng conjunctive adverbs (e.g., however, therefore, moreover).
+5. Lỗi giới từ đi kèm với các động từ học thuật (e.g., contribute to + V-ing, attribute to, impact on vs affect).`;
+
+  const systemInstruction = `
+You are an elite IELTS Senior Pedagogical Examiner and Item Writer for Cambridge / IDP.
+Your mission is to generate an authentic AI-Powered Remedial Practice Exam ("Đề thi bẫy lỗi sai tương tự - Có ngữ cảnh học thuật đầy đủ") tailored to the candidate's specific error history.
+
+CRITICAL PEDAGOGICAL RULES:
+1. NEVER simply copy or recycle the candidate's exact old sentences. DO NOT create rote memorization / recall drills.
+2. INSTEAD, extract the DEEPER UNDERLYING COGNITIVE TRAP / ERROR PATTERN (e.g., tense inconsistency in data trends, complex subject-verb separation, academic preposition traps, punctuation with conjunctive adverbs, academic register vs informal phrasing).
+3. BUILD BRAND-NEW, AUTHENTIC, COMPLETE IELTS CONTEXTS FOR EVERY QUESTION:
+   - Provide a realistic 2-4 sentence academic paragraph (e.g., IELTS Writing Task 1 Report, Task 2 Argumentative Essay, Speaking Part 3 Formal Discourse, or Academic Research Journal Excerpt).
+   - Inside the passage, place a clear blank "[___]" or target phrase to be completed/corrected.
+4. DESIGN SOPHISTICATED DISTRACTOR TRAPS (4 options: A, B, C, D):
+   - 1 clearly correct option exhibiting flawless academic English (Band 7.5 - 8.5 standard).
+   - 3 deceptive distractor options that mimic the candidate's EXACT historical mistake pattern (e.g., wrong tense, false collocation, singular/plural agreement trap, comma splice).
+5. For each question, provide:
+   - "scenario_type": The IELTS academic context (e.g., "IELTS Writing Task 1 - Phân tích xu hướng năng lượng", "IELTS Writing Task 2 - Luận điểm Giáo dục & Công nghệ", "IELTS Speaking Part 3 - Thảo luận Môi trường đô thị").
+   - "context_passage": The full academic paragraph providing complete context, with "[___]" clearly marked.
+   - "question": The clear pedagogical instruction.
+   - "options": 4 distinct choices.
+   - "correct_index": 0, 1, 2, or 3.
+   - "trap_mechanism": Vietnamese explanation of the cognitive trap (Giải thích bẫy này được cài cắm như thế nào và vì sao thí sinh hay bị lừa sang đáp án sai tương tự lỗi cũ).
+   - "explanation": In-depth Vietnamese explanation breaking down the grammatical/lexical reasons for the right answer and why each distractor is flawed.
+   - "pro_tip": An authoritative Examiner Pro-Tip for achieving Band 7.5+.
+   - "rule_category": The core grammar/lexical category (e.g., "Thì Động Từ trong Task 1", "Sự Hòa Hợp Chủ-Vị Phức Hợp", "Liên Từ & Dấu Câu Học Thuật", "Collocation & Giới Từ Học Thuật").
+   - "target_error_pattern": The abstract error pattern being tested.
+`;
+
+  const prompt = `Generate an authentic ${questionCount}-question Context-Rich IELTS Remedial Exam focusing on ${targetBandFocus} to master and overcome error traps related to: ${scopeDescription}.
+
+Past Error History to abstract traps from:
+${formattedErrors}`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-3.6-flash",
+      contents: prompt,
+      config: {
+        systemInstruction,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            test_id: { type: Type.STRING },
+            title: { type: Type.STRING },
+            description: { type: Type.STRING },
+            target_band_focus: { type: Type.STRING },
+            total_questions: { type: Type.NUMBER },
+            time_limit_minutes: { type: Type.NUMBER },
+            questions: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  id: { type: Type.STRING },
+                  scenario_type: { type: Type.STRING },
+                  context_passage: { type: Type.STRING },
+                  question: { type: Type.STRING },
+                  options: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING }
+                  },
+                  correct_index: { type: Type.NUMBER },
+                  trap_mechanism: { type: Type.STRING },
+                  explanation: { type: Type.STRING },
+                  pro_tip: { type: Type.STRING },
+                  rule_category: { type: Type.STRING },
+                  target_error_pattern: { type: Type.STRING },
+                  target_error_snippet: { type: Type.STRING }
+                },
+                required: ["id", "scenario_type", "context_passage", "question", "options", "correct_index", "trap_mechanism", "explanation", "rule_category", "target_error_snippet"]
+              }
+            }
+          },
+          required: ["test_id", "title", "description", "target_band_focus", "total_questions", "time_limit_minutes", "questions"]
+        }
+      }
+    });
+
+    const parsed = JSON.parse(response.text || "{}");
+    if (parsed && Array.isArray(parsed.questions) && parsed.questions.length > 0) {
+      return parsed;
+    }
+    throw new Error("Empty questions returned from Gemini");
+  } catch (error) {
+    console.error("Gemini Remedial Exam Generation Error:", error);
+
+    // Context-Rich, High-Pedagogy Fallback Exam Items
+    return {
+      test_id: `remedial_context_${Date.now()}`,
+      title: `⚡ Đề Thi Khắc Phục Bẫy Lỗi Sai IELTS (${scopeDescription})`,
+      description: `Bộ đề gồm ${questionCount} câu hỏi tình huống ngữ cảnh học thuật hoàn chỉnh, mô phỏng các bẫy đề thi Cambridge nhắm vào các điểm yếu ngữ pháp và từ vựng của bạn.`,
+      target_band_focus: targetBandFocus,
+      total_questions: questionCount,
+      time_limit_minutes: Math.max(5, Math.round(questionCount * 1.5)),
+      questions: [
+        {
+          id: "rq_ctx_1",
+          scenario_type: "IELTS Writing Task 1 - Đoạn Tổng quan Biểu đồ Xu hướng Quá khứ",
+          context_passage: "The line graph illustrates changes in the consumption of renewable energy across four European countries between 1995 and 2015. Overall, while wind power experienced exponential growth throughout the entire timeframe, hydroelectric output [___] significantly in 2008 before stabilizing around 45 gigawatts.",
+          question: "Dựa vào ngữ cảnh đoạn văn Task 1 trên, phương án nào chia động từ chính xác nhất vào vị trí [___]?",
+          options: [
+            "drops",
+            "dropped",
+            "has dropped",
+            "is dropping"
+          ],
+          correct_index: 1,
+          trap_mechanism: "Bẫy thì động từ trong biểu đồ có mốc thời gian quá khứ ('in 2008', 'between 1995 and 2015'). Thí sinh hay có phản xạ quán tính dùng thì Hiện tại đơn hoặc Hiện tại hoàn thành khi miêu tả biến động.",
+          explanation: "Ngữ cảnh bài viết chỉ rõ khoảng thời gian 1995-2015 và sự kiện cụ thể xảy ra 'in 2008' đã chấm dứt hoàn toàn trong quá khứ. Do đó, vị trí [___] bắt buộc phải dùng Quá khứ đơn ('dropped'). Dùng 'drops' hay 'has dropped' sẽ bị trừ điểm Grammatical Accuracy.",
+          pro_tip: "Examiner Tip (Task 1): Nếu toàn bộ các mốc trên trục hoành (X-axis) là quá khứ, 100% các câu mô tả số liệu chi tiết phải dùng thì Quá khứ đơn (Past Simple).",
+          rule_category: "Thì Động Từ (Past Simple in Task 1)",
+          target_error_pattern: "Nhầm lẫn thì hiện tại đơn / hiện tại hoàn thành khi viết Task 1 có mốc thời gian quá khứ",
+          target_error_snippet: "Lỗi dùng sai thì động từ trong báo cáo số liệu"
+        },
+        {
+          id: "rq_ctx_2",
+          scenario_type: "IELTS Writing Task 2 - Luận điểm về Giáo dục & Công nghệ",
+          context_passage: "Proponents of digital learning argue that integrating interactive tablets into primary education fosters deeper cognitive engagement. Furthermore, extensive empirical research conducted across multiple developing nations [___] that personalized software accelerates numeracy skills among underprivileged pupils.",
+          question: "Xét theo cấu trúc ngữ pháp và sự hòa hợp chủ-vị của đoạn văn học thuật trên, từ nào phù hợp nhất để điền vào [___]?",
+          options: [
+            "indicate",
+            "indicates",
+            "are indicating",
+            "have been indicated"
+          ],
+          correct_index: 1,
+          trap_mechanism: "Bẫy Subject-Verb Agreement khi chủ ngữ 'research' bị ngăn cách bởi cụm phân từ dài 'conducted across multiple developing nations'. Thí sinh dễ nhìn nhầm danh từ số nhiều 'nations' đứng ngay trước chỗ trống và chọn động từ số nhiều 'indicate'.",
+          explanation: "Chủ ngữ thực sự của mệnh đề là danh từ không đếm được 'extensive empirical research' (ngôi thứ 3 số ít). Cụm 'conducted across multiple developing nations' chỉ là mệnh đề quan hệ rút gọn bổ nghĩa. Vì vậy động từ chính phải chia số ít là 'indicates'.",
+          pro_tip: "Examiner Tip (Grammar Range): Hãy luôn xác định Danh từ gốc (Head noun) đứng trước các cụm giới từ hoặc phân từ bổ nghĩa để không bị đánh lừa bởi các danh từ phụ đứng liền kề.",
+          rule_category: "Sự Hòa Hợp Chủ-Vị (Subject-Verb Agreement với Modifier)",
+          target_error_pattern: "Chia động từ số nhiều do bị phân tâm bởi danh từ phụ đứng cạnh động từ",
+          target_error_snippet: "Lỗi hòa hợp chủ vị với danh từ không đếm được và cụm bổ ngữ"
+        },
+        {
+          id: "rq_ctx_3",
+          scenario_type: "IELTS Writing Task 2 - Luận điểm về Biến đổi Khí hậu & Chính sách",
+          context_passage: "Adopting strict environmental regulations may impose initial financial burdens on manufacturing enterprises; [___], such legislation ultimately drives technological innovation and guarantees sustainable ecological equilibrium in the long run.",
+          question: "Xét tính liên kết và dấu câu của đoạn văn phức trên, phương án liên từ nào sau đây là chuẩn mực Band 8.0?",
+          options: [
+            "however",
+            "although",
+            "despite",
+            "on the contrary"
+          ],
+          correct_index: 0,
+          trap_mechanism: "Bẫy liên từ và dấu chấm phẩy (;). Nhiều thí sinh nhầm lẫn giữa liên từ phụ thuộc (subordinating conjunctions như although/despite) và trạng từ liên kết (conjunctive adverbs như however).",
+          explanation: "Đoạn văn sử dụng cấu trúc nối 2 mệnh đề độc lập bằng dấu chấm phẩy và dấu phẩy ('; [___],'). Chỉ có trạng từ liên kết như 'however' (hoặc 'nevertheless') mới đứng sau dấu chấm phẩy và có dấu phẩy theo sau. 'Although' và 'despite' không đi sau cấu trúc này.",
+          pro_tip: "Examiner Tip (Coherence & Cohesion): Sử dụng công thức 'Clause 1; however, Clause 2' thể hiện khả năng kiểm soát dấu câu học thuật tinh tế theo tiêu chí Band 8+.",
+          rule_category: "Liên Từ & Dấu Câu Học Thuật (Cohesive Devices)",
+          target_error_pattern: "Lỗi Run-on sentence hoặc đặt sai vị trí liên từ phụ thuộc trong câu ghép",
+          target_error_snippet: "Dùng sai dấu câu khi nối 2 câu phức với trạng từ liên kết"
+        },
+        {
+          id: "rq_ctx_4",
+          scenario_type: "IELTS Speaking Part 3 - Thảo luận về Lối sống Đô thị Hiện đại",
+          context_passage: "Examiner: How has urban expansion influenced traditional community relationships?\nCandidate: In bustling metropolitan areas, rapid economic development has inadvertently led to social isolation. In fact, the lack of communal recreational spaces significantly [___] the gradual deterioration of neighborhood solidarity.",
+          question: "Chọn cụm động từ / giới từ học thuật tự nhiên nhất để hoàn thành câu trả lời của thí sinh:",
+          options: [
+            "contributes to",
+            "contributes for",
+            "leads in",
+            "results with"
+          ],
+          correct_index: 0,
+          trap_mechanism: "Bẫy collocation và giới từ đi kèm động từ nguyên nhân - kết quả. Người học Việt Nam thường dịch 'đóng góp cho' nên hay chọn nhầm 'contribute for'.",
+          explanation: "Cụm học thuật chuẩn xác là 'contribute to + Noun/V-ing' (góp phần dẫn đến điều gì). Các phương án 'contribute for', 'leads in' hay 'results with' đều là giới từ sai, vi phạm tiêu chí Lexical Resource.",
+          pro_tip: "Examiner Tip (Lexical Resource): Các cụm chỉ hệ quả luôn đi kèm giới từ cố định: 'contribute to', 'lead to', 'attribute to', 'result in'.",
+          rule_category: "Collocation & Giới Từ Cố Định",
+          target_error_pattern: "Dịch trực tiếp giới từ từ tiếng Việt (contribute for thay vì contribute to)",
+          target_error_snippet: "Dùng sai giới từ đi kèm động từ học thuật"
+        },
+        {
+          id: "rq_ctx_5",
+          scenario_type: "IELTS Writing Task 2 - Đoạn Mở bài Chủ đề Đô thị Hóa",
+          context_passage: "In contemporary society, mega-cities worldwide are grappling with unprecedented population influxes, which in turn spawn [___] across transportation, healthcare, and affordable housing sectors.",
+          question: "Để đạt tiêu chuẩn từ vựng C1/C2 (Lexical Resource) và tránh cách diễn đạt thông tục, cụm từ nào dưới đây là sự lựa chọn tối ưu?",
+          options: [
+            "a plethora of multifaceted challenges",
+            "a lot of really serious problems",
+            "many kinds of huge bad things",
+            "lots of difficult situations and troubles"
+          ],
+          correct_index: 0,
+          trap_mechanism: "Bẫy văn phong không trang trọng (informal register) và lạm dụng các từ ngữ quá bình dân ('a lot of', 'things', 'bad', 'troubles') trong bài thi Writing Academic.",
+          explanation: "'a plethora of multifaceted challenges' mang sắc thái học thuật cao cấp (C1/C2), thể hiện vốn từ vựng phong phú và diễn đạt chính xác tính chất phức tạp, đa chiều của các vấn đề đô thị. Các phương án còn lại mang tính khẩu ngữ (spoken English).",
+          pro_tip: "Examiner Tip (Lexical Resource): Thay thế các từ vựng chung chung bằng từ ghép học thuật: 'many problems' -> 'multifaceted challenges', 'big impact' -> 'profound ramifications'.",
+          rule_category: "Văn Phong & Từ Vựng Học Thuật (Lexical Precision)",
+          target_error_pattern: "Sử dụng từ ngữ thông tục, khẩu ngữ trong bài thi IELTS Writing",
+          target_error_snippet: "Lạm dụng 'a lot of' và từ vựng thông tục"
+        }
+      ].slice(0, questionCount)
+    };
+  }
+}
+
+// 10. AI Examiner Skill Diagnostic Assessment Generator
+export async function generateSkillDiagnosticAssessment(
+  profile: {
+    target_band?: number;
+    current_band?: number;
+    target_exam_date?: string;
+    weekly_hours?: number;
+    focus_skills?: string[];
+  },
+  skillBands: {
+    reading: number;
+    listening: number;
+    writing: number;
+    speaking: number;
+  },
+  frequentErrors: Array<{ code?: string; name: string; count: number }> = [],
+  testAttempts: Array<{ title?: string; skill_type: string; band_score: number; created_at?: string }> = []
+) {
+  const targetBand = profile.target_band || 7.0;
+  const currentBand = profile.current_band || 6.5;
+  const examDate = profile.target_exam_date || 'Chưa xác định';
+  const weeklyHours = profile.weekly_hours || 10;
+  const focusSkills = profile.focus_skills || ['WRITING', 'SPEAKING'];
+
+  const promptText = `
+Hãy đóng vai Trưởng ban Giám khảo IELTS Học thuật (Senior IELTS Examiner) và Chuyên gia Đánh giá Năng lực Cá nhân hóa.
+Hãy phân tích tình trạng năng lực thực tế hiện tại của học viên theo TỪNG KỸ NĂNG (Reading, Listening, Writing, Speaking) và đưa ra bản Báo cáo Đánh giá Chẩn đoán Toàn diện (IELTS Skill Diagnostic Assessment Report).
+
+DỮ LIỆU ĐẦU VÀO CỦA HỌC VIÊN:
+- Điểm mục tiêu tổng thể (Overall Target): Band ${targetBand}
+- Điểm ước lượng hiện tại (Overall Current): Band ${currentBand}
+- Điểm thành phần từng kỹ năng hiện tại:
+  + Reading: ${skillBands.reading}
+  + Listening: ${skillBands.listening}
+  + Writing: ${skillBands.writing}
+  + Speaking: ${skillBands.speaking}
+- Ngày thi dự kiến: ${examDate}
+- Thời gian tự học mỗi tuần: ${weeklyHours} giờ/tuần
+- Kỹ năng trọng tâm đăng ký: ${focusSkills.join(', ')}
+- Lỗi sai thường gặp đã lưu trong Sổ tay: ${frequentErrors.length > 0 ? frequentErrors.map(e => `${e.name} (${e.count} lần)`).join(', ') : 'Chưa có nhiều lỗi ghi nhận'}
+- Lịch sử bài thi gần đây: ${testAttempts.length > 0 ? testAttempts.map(a => `${a.skill_type}: Band ${a.band_score}`).join(', ') : 'Đang trong giai đoạn làm quen'}
+
+YÊU CẦU ĐÁNH GIÁ CHUYÊN SÂU:
+1. Đánh giá riêng biệt cho từng kỹ năng trong 4 kỹ năng:
+   - "READING": Đánh giá tốc độ đọc hiểu, khả năng bắt từ đồng nghĩa (paraphrasing), đối phó bẫy True/False/Not Given, Heading Matching và Passage 3.
+   - "LISTENING": Đánh giá khả năng bắt bẫy xao nhãng (distractors), độ nhạy chính tả danh từ số nhiều/số ít, tốc độ theo kịp Section 3 & 4.
+   - "WRITING": Đánh giá 4 tiêu chí chấm thi chính thức (Task Response/Achievement, Coherence & Cohesion, Lexical Resource, Grammatical Range & Accuracy), khả năng viết Overview Task 1 và lập luận Task 2.
+   - "SPEAKING": Đánh giá độ trôi chảy (Fluency), phát âm (Pronunciation & Intonation), độ sâu phát triển ý Part 2 & Part 3, kiểm soát ngữ pháp thì quá khứ/điều kiện.
+2. Với mỗi kỹ năng, cung cấp:
+   - status_level: Một trong các mức: "Vững chắc" | "Tốt / Đạt chuẩn" | "Cần bứt phá" | "Báo động / Cần bổ trợ gấp"
+   - status_color: "emerald" | "blue" | "amber" | "rose"
+   - diagnosis_summary: Đoạn nhận xét chi tiết, chuẩn xác về phong độ hiện tại (2-3 câu ngắn gọn, súc tích).
+   - strengths: 2-3 điểm mạnh rõ nét.
+   - weaknesses: 2-3 điểm nghẽn cản trở tăng band.
+   - frequent_pitfalls: 1-2 bẫy đề thi hoặc lỗi sai học viên dễ vướng phải.
+   - action_plan: 2-3 hành động chiến lược cụ thể trong 2-4 tuần tới để tăng 0.5 - 1.0 Band.
+   - recommended_practice: Tên một bài tập / dạng bài cụ thể nên luyện ngay trên hệ thống.
+3. Tổng kết toàn diện (Overall Diagnostic):
+   - overall_verdict: Kết luận ngắn gọn (ví dụ: "Có nền tảng tốt, cần tăng tốc bứt phá Writing & Speaking").
+   - overall_analysis: Nhận xét bao quát lộ trình và tính khả thi đạt mục tiêu Band ${targetBand}.
+   - strategic_priorities: 3 ưu tiên cốt lõi nhất.
+   - estimated_weeks_to_target: Số tuần dự kiến nếu duy trì ${weeklyHours} giờ/tuần.
+
+Trả về kết quả chuẩn định dạng JSON theo schema đã quy định.
+`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: promptText,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            overall_verdict: { type: Type.STRING },
+            overall_analysis: { type: Type.STRING },
+            overall_readiness_percentage: { type: Type.NUMBER },
+            estimated_weeks_to_target: { type: Type.NUMBER },
+            strategic_priorities: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING }
+            },
+            skills_diagnosis: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  skill: { type: Type.STRING, enum: ["READING", "LISTENING", "WRITING", "SPEAKING"] },
+                  skill_name_vi: { type: Type.STRING },
+                  current_band: { type: Type.NUMBER },
+                  target_band: { type: Type.NUMBER },
+                  gap_text: { type: Type.STRING },
+                  status_level: { type: Type.STRING },
+                  status_color: { type: Type.STRING, enum: ["emerald", "blue", "amber", "rose"] },
+                  diagnosis_summary: { type: Type.STRING },
+                  strengths: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING }
+                  },
+                  weaknesses: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING }
+                  },
+                  frequent_pitfalls: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING }
+                  },
+                  action_plan: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING }
+                  },
+                  recommended_practice: { type: Type.STRING }
+                },
+                required: [
+                  "skill",
+                  "skill_name_vi",
+                  "current_band",
+                  "target_band",
+                  "gap_text",
+                  "status_level",
+                  "status_color",
+                  "diagnosis_summary",
+                  "strengths",
+                  "weaknesses",
+                  "frequent_pitfalls",
+                  "action_plan",
+                  "recommended_practice"
+                ]
+              }
+            }
+          },
+          required: [
+            "overall_verdict",
+            "overall_analysis",
+            "overall_readiness_percentage",
+            "estimated_weeks_to_target",
+            "strategic_priorities",
+            "skills_diagnosis"
+          ]
+        }
+      }
+    });
+
+    const parsed = JSON.parse(response.text || "{}");
+    if (parsed && Array.isArray(parsed.skills_diagnosis) && parsed.skills_diagnosis.length >= 4) {
+      return parsed;
+    }
+    throw new Error("Invalid skill diagnosis response from Gemini");
+  } catch (error) {
+    console.error("Gemini Skill Diagnosis Generation Error:", error);
+
+    // Contextual High-Quality Fallback
+    const rGap = targetBand - skillBands.reading;
+    const lGap = targetBand - skillBands.listening;
+    const wGap = targetBand - skillBands.writing;
+    const sGap = targetBand - skillBands.speaking;
+
+    return {
+      overall_verdict: `Nền tảng Band ${currentBand} vững, cần tập trung dồn lực bứt phá kỹ năng Viết & Nói`,
+      overall_analysis: `Điểm số các kỹ năng tiếp nhận (Reading ${skillBands.reading}, Listening ${skillBands.listening}) đang là điểm tựa lớn. Để chinh phục mục tiêu Band ${targetBand} trước ${examDate}, bạn cần khắc phục các lỗi ngữ pháp cố hữu và tăng phản xạ biểu đạt học thuật ở Writing (${skillBands.writing}) và Speaking (${skillBands.speaking}).`,
+      overall_readiness_percentage: Math.min(95, Math.max(40, Math.round((currentBand / targetBand) * 90))),
+      estimated_weeks_to_target: Math.max(4, Math.round(Math.max(0, targetBand - currentBand) * 12)),
+      strategic_priorities: [
+        "Kiểm soát triệt để lỗi thì động từ và hòa hợp chủ vị trong Writing Task 1 & 2",
+        "Luyện tập phản xạ Speaking Part 2 với dàn bài 1 phút và mở rộng ý Part 3",
+        "Rèn thói quen gạch chân Keyword & Paraphrase để tối ưu thời gian Reading Passage 3"
+      ],
+      skills_diagnosis: [
+        {
+          skill: "READING",
+          skill_name_vi: "Đọc Hiểu (Reading)",
+          current_band: skillBands.reading,
+          target_band: targetBand,
+          gap_text: rGap <= 0 ? "Đạt / Vượt mục tiêu" : `Cách mục tiêu ${rGap.toFixed(1)} Band`,
+          status_level: skillBands.reading >= targetBand ? "Vững chắc" : skillBands.reading >= 6.5 ? "Tốt / Đạt chuẩn" : "Cần bứt phá",
+          status_color: skillBands.reading >= targetBand ? "emerald" : skillBands.reading >= 6.5 ? "blue" : "amber",
+          diagnosis_summary: `Khả năng đọc hiểu nhanh và định vị thông tin ở Passage 1 & 2 tốt. Tuy nhiên tốc độ làm bài ở Passage 3 còn bị chậm khi gặp bài báo khoa học dài có nhiều thuật ngữ chuyên môn.`,
+          strengths: [
+            "Nắm bắt tốt các dạng câu hỏi Completion (điền từ vào tóm tắt)",
+            "Kỹ năng Skimming nắm ý chính đoạn văn ổn định"
+          ],
+          weaknesses: [
+            "Dễ phân vân giữa False và Not Given khi tác giả đưa thông tin suy diễn",
+            "Mất nhiều thời gian ở dạng bài Matching Headings"
+          ],
+          frequent_pitfalls: [
+            "Bẫy từ đồng nghĩa phủ định ngầm (implicit negative markers)",
+            "Đọc quá chi tiết từng từ ở Passage 3 dẫn tới thiếu thời gian kiểm tra lại đáp án"
+          ],
+          action_plan: [
+            "Luyện tập chiến thuật 15-20-25 phút cho 3 Passage trên Cambridge 18",
+            "Lập bảng từ đồng nghĩa (Keyword Table) sau mỗi lần giải đề thi thử"
+          ],
+          recommended_practice: "Luyện bài Cam 18 Test 1 Reading Passage 3 (Khoa học & Môi trường)"
+        },
+        {
+          skill: "LISTENING",
+          skill_name_vi: "Nghe Hiểu (Listening)",
+          current_band: skillBands.listening,
+          target_band: targetBand,
+          gap_text: lGap <= 0 ? "Đạt / Vượt mục tiêu" : `Cách mục tiêu ${lGap.toFixed(1)} Band`,
+          status_level: skillBands.listening >= targetBand ? "Vững chắc" : skillBands.listening >= 6.5 ? "Tốt / Đạt chuẩn" : "Cần bứt phá",
+          status_color: skillBands.listening >= targetBand ? "emerald" : skillBands.listening >= 6.5 ? "blue" : "amber",
+          diagnosis_summary: `Bắt âm chuẩn ở Section 1 & 2 (đối thoại đời sống). Cần rèn thêm sự tập trung liên tục ở Section 3 (thảo luận học thuật đa giọng đọc) và Section 4 (bài giảng độc thoại).`,
+          strengths: [
+            "Khả năng bắt số điện thoại, tên riêng, địa chỉ Section 1 đạt độ chính xác gần như tuyệt đối",
+            "Khả năng đoán trước loại từ cần điền (Noun/Verb/Adjective) trước khi nghe"
+          ],
+          weaknesses: [
+            "Dễ bị mắc bẫy sửa thông tin (Distractor markers: 'actually', 'instead of', 'no wait')",
+            "Bỏ lỡ âm đuôi số nhiều (-s/-es) hoặc thì quá khứ (-ed) khi điền từ chính tả"
+          ],
+          frequent_pitfalls: [
+            "Bẫy người nói thay đổi quyết định vào giây cuối",
+            "Bị trôi mạch nghe khi tập trung quá lâu vào một câu hỏi bị lỡ"
+          ],
+          action_plan: [
+            "Thực hiện phương pháp nghe chép chính tả (Dictation) cho Section 3 & 4 (15 phút/ngày)",
+            "Tập phản xạ buông câu đã lỡ để đón đầu câu tiếp theo ngay lập tức"
+          ],
+          recommended_practice: "Luyện đề Listening Test 1 (Section 3: Campus Research Discussion)"
+        },
+        {
+          skill: "WRITING",
+          skill_name_vi: "Viết Học Thuật (Writing)",
+          current_band: skillBands.writing,
+          target_band: targetBand,
+          gap_text: wGap <= 0 ? "Đạt mục tiêu" : `Cách mục tiêu ${wGap.toFixed(1)} Band`,
+          status_level: skillBands.writing >= targetBand ? "Vững chắc" : skillBands.writing >= 6.0 ? "Cần bứt phá" : "Báo động / Cần bổ trợ gấp",
+          status_color: skillBands.writing >= targetBand ? "emerald" : skillBands.writing >= 6.0 ? "amber" : "rose",
+          diagnosis_summary: `Ý tưởng mạch lạc, bố cục 4 đoạn chuẩn xác. Điểm nghẽn lớn nhất nằm ở tính chính xác của ngữ pháp (Grammar Accuracy) và việc sử dụng vốn từ học thuật C1/C2 tự nhiên thay vì ghép từ gượng ép.`,
+          strengths: [
+            "Nắm vững công thức viết Overview nêu rõ xu hướng lớn cho Task 1",
+            "Bố cục bài viết 4 đoạn rõ ràng với Topic Sentence ở đầu mỗi thân bài"
+          ],
+          weaknesses: [
+            "Còn mắc lỗi chia sai thì quá khứ (Past Simple) khi viết về mốc thời gian cũ trong Task 1",
+            "Chưa phát triển luận điểm đủ sâu với ví dụ thực tế trong Task 2, dễ bị lặp từ nối cơ bản (Firstly, Secondly)"
+          ],
+          frequent_pitfalls: [
+            "Lỗi dịch nghĩa thô từ tiếng Việt (word-by-word Vietnamese thinking)",
+            "Quên dành 5 phút cuối để rà soát lỗi chính tả, mạo từ (a/an/the) và dấu câu"
+          ],
+          action_plan: [
+            "Luyện viết 2 bài Task 1 và 1 bài Task 2 mỗi tuần, chấm AI và sửa toàn bộ lỗi đỏ",
+            "Học và áp dụng 10 cấu trúc câu phức nâng cao (Mệnh đề quan hệ, Inversion, Cleft sentences)"
+          ],
+          recommended_practice: "Nộp bài viết Task 1 Map & Task 2 AI Automation để AI chấm chi tiết 4 tiêu chí"
+        },
+        {
+          skill: "SPEAKING",
+          skill_name_vi: "Nói (Speaking)",
+          current_band: skillBands.speaking,
+          target_band: targetBand,
+          gap_text: sGap <= 0 ? "Đạt mục tiêu" : `Cách mục tiêu ${sGap.toFixed(1)} Band`,
+          status_level: skillBands.speaking >= targetBand ? "Vững chắc" : skillBands.speaking >= 6.5 ? "Tốt / Đạt chuẩn" : "Cần bứt phá",
+          status_color: skillBands.speaking >= targetBand ? "emerald" : skillBands.speaking >= 6.5 ? "blue" : "amber",
+          diagnosis_summary: `Phát âm rõ ràng, tốc độ nói vừa phải. Cần cải thiện ngữ điệu (Intonation), độ liền mạch (Fluency) và khả năng mở rộng câu trả lời Part 3 mang tính phân tích đa chiều.`,
+          strengths: [
+            "Tự tin trả lời Part 1 với các chủ đề thân quen (Hometown, Study, Hobbies)",
+            "Phát âm rõ phụ âm đầu và kiểm soát tốt tốc độ nói không bị quá nhanh"
+          ],
+          weaknesses: [
+            "Vẫn còn các khoảng ngập ngừng ngắt quãng (hesitations) khi cần suy nghĩ từ vựng chuyên sâu",
+            "Part 2 đôi khi bị ngắt sớm trước 1 phút 45 giây do chưa biết triển khai câu chuyện theo trục thời gian"
+          ],
+          frequent_pitfalls: [
+            "Lạm dụng từ chêm 'uhm', 'like', 'you know' khi bí ý tưởng",
+            "Quên áp dụng công thức P-E-E (Point - Explanation - Example) trong Part 3"
+          ],
+          action_plan: [
+            "Luyện nói Part 2 với bấm giờ 1 phút chuẩn bị và 2 phút nói liên tục",
+            "Thực hành với Giám khảo AI Speaking để nhận diện lỗi phát âm và phản xạ Part 3"
+          ],
+          recommended_practice: "Luyện nói Cue Card Part 2: Describe a Memorable Journey với AI Speaking Partner"
+        }
+      ]
+    };
+  }
+}
+
 
