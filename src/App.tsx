@@ -285,17 +285,6 @@ export default function App() {
             setIsCoinModalOpen(true);
           }}
         />
-
-        <footer className="border-t border-slate-200/80 bg-white/80 backdrop-blur-md text-slate-500 py-4 text-center text-xs">
-          <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
-            <p className="font-semibold text-emerald-700">© 2026 IELTS AI Master — Translucent Glossy Light Theme</p>
-            <div className="flex items-center gap-3 text-[11px] font-medium text-slate-500">
-              <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Hệ thống Đăng ký & Đăng nhập</span>
-              <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> SQLite Database</span>
-              <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Gemini 3.6 Flash</span>
-            </div>
-          </div>
-        </footer>
       </div>
     </div>
   );
