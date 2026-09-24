@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   AlertTriangle,
   Sparkles,
@@ -10,7 +10,11 @@ import {
   ChevronDown,
   ChevronUp,
   TrendingUp,
-  Maximize2
+  Maximize2,
+  Filter,
+  Check,
+  Zap,
+  HelpCircle
 } from 'lucide-react';
 import { AIGradingResult, ErrorInstance, SentenceUpgrade, ImprovedBand8Essay } from '../types';
 
@@ -21,6 +25,78 @@ interface EssayErrorHighlightViewerProps {
   taskLabel: string;
 }
 
+export function categorizeError(code: string = ''): {
+  type: 'GRAMMAR' | 'SPELLING_PUNCT' | 'VOCAB';
+  label: string;
+  badgeBg: string;
+  badgeText: string;
+  markClass: string;
+  markSelectedClass: string;
+} {
+  const c = (code || '').toLowerCase();
+  if (
+    c.includes('grammar') ||
+    c.includes('agreement') ||
+    c.includes('tense') ||
+    c.includes('verb') ||
+    c.includes('clause') ||
+    c.includes('passive') ||
+    c.includes('preposition') ||
+    c.includes('modal') ||
+    c.includes('article') ||
+    c.includes('conditional') ||
+    c.includes('word_form') ||
+    c.includes('comparative')
+  ) {
+    let specificLabel = 'Ngữ pháp & Cấu trúc';
+    if (c.includes('agreement')) specificLabel = 'Hòa hợp Chủ - Vị';
+    else if (c.includes('tense') || c.includes('irregular')) specificLabel = 'Thì & Dạng động từ';
+    else if (c.includes('verb_form') || c.includes('gerund')) specificLabel = 'Dạng động từ (V-ing / to-V)';
+    else if (c.includes('clause') || c.includes('conjunction')) specificLabel = 'Mệnh đề & Liên từ nối';
+    else if (c.includes('passive')) specificLabel = 'Thể bị động / Nội động từ';
+    else if (c.includes('preposition')) specificLabel = 'Giới từ';
+    else if (c.includes('article') || c.includes('noun')) specificLabel = 'Mạo từ & Danh từ';
+    else if (c.includes('word_form')) specificLabel = 'Từ loại (Word Form)';
+    else if (c.includes('conditional')) specificLabel = 'Câu điều kiện';
+    else if (c.includes('modal')) specificLabel = 'Động từ khuyết thiếu';
+
+    return {
+      type: 'GRAMMAR',
+      label: `[NGỮ PHÁP] ${specificLabel}`,
+      badgeBg: 'bg-rose-100',
+      badgeText: 'text-rose-800 border-rose-300',
+      markClass: 'bg-rose-100 text-rose-900 border-b-2 border-rose-500 hover:bg-rose-200',
+      markSelectedClass: 'bg-rose-600 text-white ring-2 ring-rose-600/50 shadow-sm'
+    };
+  }
+
+  if (c.includes('spelling') || c.includes('typo') || c.includes('punct') || c.includes('comma') || c.includes('capital') || c.includes('contraction')) {
+    let specificLabel = 'Chính tả & Dấu câu';
+    if (c.includes('spelling') || c.includes('typo')) specificLabel = 'Chính tả';
+    else if (c.includes('comma') || c.includes('punct')) specificLabel = 'Dấu câu & Dấu phẩy';
+    else if (c.includes('capital')) specificLabel = 'Viết hoa';
+    else if (c.includes('contraction')) specificLabel = 'Viết tắt học thuật';
+
+    return {
+      type: 'SPELLING_PUNCT',
+      label: `[CHÍNH TẢ / DẤU CÂU] ${specificLabel}`,
+      badgeBg: 'bg-amber-100',
+      badgeText: 'text-amber-800 border-amber-300',
+      markClass: 'bg-amber-100 text-amber-900 border-b-2 border-amber-500 hover:bg-amber-200',
+      markSelectedClass: 'bg-amber-600 text-white ring-2 ring-amber-600/50 shadow-sm'
+    };
+  }
+
+  return {
+    type: 'VOCAB',
+    label: '[TỪ VỰNG] Collocation & Diễn đạt',
+    badgeBg: 'bg-blue-100',
+    badgeText: 'text-blue-800 border-blue-300',
+    markClass: 'bg-blue-100 text-blue-900 border-b-2 border-blue-500 hover:bg-blue-200',
+    markSelectedClass: 'bg-blue-600 text-white ring-2 ring-blue-600/50 shadow-sm'
+  };
+}
+
 export const EssayErrorHighlightViewer: React.FC<EssayErrorHighlightViewerProps> = ({
   essayText,
   result,
@@ -29,6 +105,7 @@ export const EssayErrorHighlightViewer: React.FC<EssayErrorHighlightViewerProps>
 }) => {
   const [activeTab, setActiveTab] = useState<'HIGHLIGHT' | 'UPGRADES' | 'BAND8_ESSAY'>('HIGHLIGHT');
   const [selectedError, setSelectedError] = useState<ErrorInstance | null>(null);
+  const [filterCategory, setFilterCategory] = useState<'ALL' | 'GRAMMAR' | 'SPELLING_PUNCT' | 'VOCAB'>('ALL');
   const [expandedUpgradeIdx, setExpandedUpgradeIdx] = useState<number | null>(0);
   const [expandedParagraphIdx, setExpandedParagraphIdx] = useState<number | null>(0);
 
@@ -41,6 +118,16 @@ export const EssayErrorHighlightViewer: React.FC<EssayErrorHighlightViewerProps>
   const targetBandLabel = isHighBand ? 'Band 9.0' : 'Band 8.0 - 9.0';
   const rewriteTabLabel = isHighBand ? 'Bản Viết Lại Band 9.0' : 'Bản Viết Lại Band 8.0 - 9.0';
 
+  // Counts by category
+  const grammarCount = useMemo(() => errors.filter(e => categorizeError(e.error_tag_code).type === 'GRAMMAR').length, [errors]);
+  const spellingPunctCount = useMemo(() => errors.filter(e => categorizeError(e.error_tag_code).type === 'SPELLING_PUNCT').length, [errors]);
+  const vocabCount = useMemo(() => errors.filter(e => categorizeError(e.error_tag_code).type === 'VOCAB').length, [errors]);
+
+  const filteredErrors = useMemo(() => {
+    if (filterCategory === 'ALL') return errors;
+    return errors.filter(e => categorizeError(e.error_tag_code).type === filterCategory);
+  }, [errors, filterCategory]);
+
   // Helper to render text with highlighted error snippets
   const renderHighlightedEssay = () => {
     if (!essayText) return null;
@@ -52,12 +139,9 @@ export const EssayErrorHighlightViewer: React.FC<EssayErrorHighlightViewerProps>
       );
     }
 
-    // Sort errors by position or find occurrences
-    let currentText = essayText;
-    // Map of snippet -> error
     return (
       <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl text-xs text-slate-800 leading-relaxed whitespace-pre-line font-sans">
-        {renderHighlightedSegments(essayText, errors, (err) => setSelectedError(err), selectedError)}
+        {renderHighlightedSegments(essayText, errors, (err) => setSelectedError(err), selectedError, filterCategory)}
       </div>
     );
   };
@@ -69,12 +153,12 @@ export const EssayErrorHighlightViewer: React.FC<EssayErrorHighlightViewerProps>
         <div>
           <div className="flex items-center gap-2">
             <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider bg-emerald-100 text-emerald-800">
-              Chi Tiết Sửa Lỗi & Nâng Cấp {targetBandLabel}
+              Chi Tiết Sửa Lỗi Ngữ Pháp & Nâng Cấp {targetBandLabel}
             </span>
             <span className="text-xs text-slate-500 font-bold">{taskLabel}</span>
           </div>
           <h3 className="text-lg font-black text-slate-900 mt-1">
-            Phân Tích Highlight Lỗi Sai & Cải Thiện Bài Viết
+            Chữa Lỗi Ngữ Pháp & Nâng Cấp Câu Chuẩn Giám Khảo IELTS
           </h3>
         </div>
 
@@ -89,7 +173,7 @@ export const EssayErrorHighlightViewer: React.FC<EssayErrorHighlightViewerProps>
             }`}
           >
             <AlertTriangle className="w-3.5 h-3.5 text-rose-600" />
-            <span>Highlight Lỗi ({errors.length})</span>
+            <span>Chữa Lỗi Chi Tiết ({errors.length})</span>
           </button>
 
           <button
@@ -101,7 +185,7 @@ export const EssayErrorHighlightViewer: React.FC<EssayErrorHighlightViewerProps>
             }`}
           >
             <TrendingUp className="w-3.5 h-3.5 text-amber-600" />
-            <span>Nâng Cấp Câu ({upgrades.length || '3-5'})</span>
+            <span>Nâng Cấp Cấu Trúc Câu ({upgrades.length || '3-5'})</span>
           </button>
 
           {band8Essay && (
@@ -123,62 +207,119 @@ export const EssayErrorHighlightViewer: React.FC<EssayErrorHighlightViewerProps>
       {/* TAB 1: HIGHLIGHT TRỰC TIẾP TRÊN BÀI VIẾT CỦA HỌC VIÊN */}
       {activeTab === 'HIGHLIGHT' && (
         <div className="space-y-4">
-          <div className="flex items-center justify-between text-xs text-slate-600">
-            <span className="font-bold flex items-center gap-1.5">
-              <Info className="w-4 h-4 text-emerald-600" />
-              Bấm vào các đoạn được <span className="bg-rose-100 text-rose-800 px-1.5 py-0.5 rounded font-bold border border-rose-300">highlight đỏ</span> dưới đây để xem giải thích chi tiết và cách sửa đúng:
-            </span>
-            <span className="text-[11px] text-slate-400 font-mono">
-              Tổng cộng {errors.length} lỗi
-            </span>
+          {/* Error Category Filter Bar */}
+          <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 bg-slate-50 border border-slate-200 rounded-2xl">
+            <div className="flex items-center gap-1 text-xs text-slate-600 font-bold">
+              <Filter className="w-3.5 h-3.5 text-slate-400" />
+              <span>Lọc theo nhóm lỗi:</span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                onClick={() => { setFilterCategory('ALL'); setSelectedError(null); }}
+                className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1 ${
+                  filterCategory === 'ALL'
+                    ? 'bg-slate-900 text-white shadow-xs'
+                    : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+                }`}
+              >
+                <span>Tất cả ({errors.length})</span>
+              </button>
+
+              <button
+                onClick={() => { setFilterCategory('GRAMMAR'); setSelectedError(null); }}
+                className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1 ${
+                  filterCategory === 'GRAMMAR'
+                    ? 'bg-rose-600 text-white shadow-xs'
+                    : 'bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200'
+                }`}
+              >
+                <span className="w-2 h-2 rounded-full bg-rose-500 inline-block" />
+                <span>Ngữ Pháp & Cấu Trúc ({grammarCount})</span>
+              </button>
+
+              <button
+                onClick={() => { setFilterCategory('SPELLING_PUNCT'); setSelectedError(null); }}
+                className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1 ${
+                  filterCategory === 'SPELLING_PUNCT'
+                    ? 'bg-amber-600 text-white shadow-xs'
+                    : 'bg-amber-50 text-amber-800 hover:bg-amber-100 border border-amber-200'
+                }`}
+              >
+                <span className="w-2 h-2 rounded-full bg-amber-500 inline-block" />
+                <span>Chính Tả & Dấu Câu ({spellingPunctCount})</span>
+              </button>
+
+              <button
+                onClick={() => { setFilterCategory('VOCAB'); setSelectedError(null); }}
+                className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1 ${
+                  filterCategory === 'VOCAB'
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'bg-blue-50 text-blue-800 hover:bg-blue-100 border border-blue-200'
+                }`}
+              >
+                <span className="w-2 h-2 rounded-full bg-blue-500 inline-block" />
+                <span>Từ Vựng & Collocation ({vocabCount})</span>
+              </button>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
             {/* Left: Highlighted text container */}
             <div className="lg:col-span-7 space-y-2">
-              <label className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
-                Bài viết học viên (Đã đánh dấu lỗi sai):
-              </label>
+              <div className="flex items-center justify-between">
+                <label className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
+                  Bài viết học viên (Đã đánh dấu lỗi sai):
+                </label>
+                <span className="text-[10px] text-slate-400 font-medium">Bấm vào từ được highlight để xem giải thích</span>
+              </div>
               {renderHighlightedEssay()}
             </div>
 
             {/* Right: Error Inspection Cards */}
             <div className="lg:col-span-5 space-y-2.5">
               <label className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500 flex items-center justify-between">
-                <span>Chi tiết lỗi & Quy tắc ngữ pháp:</span>
+                <span>
+                  {filterCategory === 'GRAMMAR' ? 'Chi Tiết Lỗi Ngữ Pháp & Quy Tắc:' : 'Chi Tiết Lỗi & Quy Tắc Học Thuật:'}
+                </span>
                 {selectedError && (
                   <button
                     onClick={() => setSelectedError(null)}
                     className="text-emerald-600 hover:underline text-[10px] cursor-pointer"
                   >
-                    Xem tất cả ({errors.length})
+                    Xem tất cả ({filteredErrors.length})
                   </button>
                 )}
               </label>
 
-              {errors.length === 0 ? (
+              {filteredErrors.length === 0 ? (
                 <div className="p-5 bg-emerald-50 border border-emerald-200 rounded-2xl text-xs text-emerald-900 text-center space-y-1">
                   <CheckCircle2 className="w-6 h-6 text-emerald-600 mx-auto mb-1" />
-                  <strong className="block font-bold">Không phát hiện lỗi ngữ pháp hay từ vựng nghiêm trọng!</strong>
-                  <p className="text-emerald-800/80 text-[11px]">Bài viết rất chuẩn xác và tự nhiên.</p>
+                  <strong className="block font-bold">
+                    {filterCategory === 'GRAMMAR' 
+                      ? 'Không phát hiện lỗi ngữ pháp hay cấu trúc câu!' 
+                      : 'Không phát hiện lỗi nào trong danh mục này!'}
+                  </strong>
+                  <p className="text-emerald-800/80 text-[11px]">Độ chính xác ngữ pháp và diễn đạt được kiểm soát rất tốt.</p>
                 </div>
               ) : (
-                <div className="space-y-2.5 max-h-[380px] overflow-y-auto pr-1">
-                  {(selectedError ? [selectedError] : errors).map((err, idx) => {
+                <div className="space-y-2.5 max-h-[420px] overflow-y-auto pr-1">
+                  {(selectedError ? [selectedError] : filteredErrors).map((err, idx) => {
                     const isSelected = selectedError?.original_text === err.original_text;
+                    const catInfo = categorizeError(err.error_tag_code);
                     return (
                       <div
                         key={idx}
                         onClick={() => setSelectedError(err)}
                         className={`p-3.5 rounded-2xl border transition cursor-pointer text-xs space-y-2 ${
                           isSelected
-                            ? 'bg-rose-50/90 border-rose-300 ring-2 ring-rose-400/30 shadow-sm'
+                            ? 'bg-rose-50/90 border-rose-400 ring-2 ring-rose-400/40 shadow-sm'
                             : 'bg-slate-50 hover:bg-slate-100/80 border-slate-200'
                         }`}
                       >
                         <div className="flex items-center justify-between">
-                          <span className="px-2 py-0.5 rounded-md text-[10px] font-mono font-black uppercase bg-rose-100 text-rose-800 border border-rose-200">
-                            {err.error_tag_code || 'ERROR'}
+                          <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase border ${catInfo.badgeBg} ${catInfo.badgeText}`}>
+                            {catInfo.label}
                           </span>
                           <span className="text-[10px] text-slate-400 font-bold">Lỗi #{idx + 1}</span>
                         </div>
@@ -190,15 +331,18 @@ export const EssayErrorHighlightViewer: React.FC<EssayErrorHighlightViewerProps>
                             <span>"{err.original_text}"</span>
                           </div>
                           <div className="text-emerald-700 font-bold flex items-start gap-1.5">
-                            <span className="text-[10px] uppercase font-bold text-emerald-600 shrink-0 mt-0.5">Đúng:</span>
+                            <span className="text-[10px] uppercase font-bold text-emerald-600 shrink-0 mt-0.5">Sửa đúng:</span>
                             <span>"{err.corrected_text}"</span>
                           </div>
                         </div>
 
                         {/* Explanation */}
-                        <div className="text-slate-600 text-[11px] leading-relaxed">
-                          <strong className="text-slate-800">Tại sao sai & Quy tắc: </strong>
-                          {err.explanation}
+                        <div className="text-slate-600 text-[11px] leading-relaxed bg-white/70 p-2.5 rounded-xl border border-slate-200/80 space-y-1">
+                          <strong className="text-slate-900 block flex items-center gap-1">
+                            <BookOpen className="w-3.5 h-3.5 text-emerald-600" />
+                            Quy tắc ngữ pháp & Giải thích chi tiết:
+                          </strong>
+                          <p className="text-slate-700 leading-relaxed font-sans">{err.explanation}</p>
                         </div>
                       </div>
                     );
@@ -216,10 +360,10 @@ export const EssayErrorHighlightViewer: React.FC<EssayErrorHighlightViewerProps>
           <div className="p-4 bg-amber-50/80 border border-amber-200 rounded-2xl text-xs text-amber-950 space-y-1">
             <strong className="font-black flex items-center gap-1.5 text-amber-900">
               <TrendingUp className="w-4 h-4 text-amber-600" />
-              Chiến lược nâng cấp câu lên {targetBandLabel}+:
+              Chiến lược nâng cấp câu lên {targetBandLabel}+ (Grammatical Range & Precision):
             </strong>
             <p className="leading-relaxed">
-              Dưới đây là các câu tiêu biểu trích từ bài viết của bạn. Giám khảo AI phân tích chi tiết từng cụm từ được thay đổi kèm lý do học thuật (Academic Lexicon, Advanced Grammar, Collocations, Participle Clauses) để bài viết đạt điểm tối đa.
+              Dưới đây là các câu tiêu biểu trích từ bài viết của bạn. Giám khảo AI phân tích chi tiết từng cụm từ được thay đổi kèm lý do học thuật (Đa dạng cấu trúc ngữ pháp GRA: Mệnh đề phân từ, Đảo ngữ, Thể bị động học thuật, Collocations C1/C2) để bài viết bứt phá điểm số.
             </p>
           </div>
 
@@ -268,7 +412,7 @@ export const EssayErrorHighlightViewer: React.FC<EssayErrorHighlightViewerProps>
                       <div className="bg-emerald-50/70 p-3 rounded-xl border border-emerald-300 space-y-1">
                         <span className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider block flex items-center gap-1">
                           <Sparkles className="w-3 h-3 text-emerald-600" />
-                          Phiên bản {targetBandLabel}+:
+                          Phiên bản {targetBandLabel}+ (Đa dạng cấu trúc & Ngữ pháp):
                         </span>
                         <p className="text-emerald-950 font-bold font-sans">"{upg.upgraded_sentence}"</p>
                       </div>
@@ -351,11 +495,8 @@ export const EssayErrorHighlightViewer: React.FC<EssayErrorHighlightViewerProps>
                     className="flex items-center justify-between cursor-pointer"
                   >
                     <div className="flex items-center gap-2">
-                      <span className="px-2.5 py-0.5 rounded-lg text-xs font-black bg-slate-900 text-white">
-                        {para.paragraph_type}
-                      </span>
-                      <span className="font-extrabold text-xs text-slate-800">
-                        So sánh và Nâng cấp {para.paragraph_type}
+                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-slate-900 text-white">
+                        {para.paragraph_type || `Đoạn ${pIdx + 1}`}
                       </span>
                     </div>
                     <button className="text-slate-400 hover:text-slate-700">
@@ -364,38 +505,31 @@ export const EssayErrorHighlightViewer: React.FC<EssayErrorHighlightViewerProps>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-                    {/* Original Paragraph */}
-                    <div className="bg-white p-3.5 rounded-xl border border-slate-200 space-y-1.5">
+                    <div className="bg-white p-3 rounded-xl border border-slate-200 space-y-1">
                       <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
                         Đoạn gốc của bạn:
                       </span>
-                      <p className="text-slate-700 font-sans leading-relaxed whitespace-pre-line text-xs">
-                        {para.original_paragraph || '(Bạn chưa viết đoạn này hoặc thiếu)'}
+                      <p className="text-slate-700 font-sans italic whitespace-pre-line">
+                        {para.original_paragraph || '(Chưa có đoạn này trong bài viết)'}
                       </p>
                     </div>
 
-                    {/* Improved Paragraph */}
-                    <div className="bg-emerald-50/80 p-3.5 rounded-xl border border-emerald-300 space-y-1.5">
+                    <div className="bg-emerald-50/70 p-3 rounded-xl border border-emerald-300 space-y-1">
                       <span className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider block flex items-center gap-1">
                         <Sparkles className="w-3 h-3 text-emerald-600" />
-                        Đoạn viết lại chuẩn {targetBandLabel}:
+                        Đoạn tối ưu {targetBandLabel}:
                       </span>
-                      <p className="text-emerald-950 font-bold font-sans leading-relaxed whitespace-pre-line text-xs">
+                      <p className="text-emerald-950 font-bold font-sans whitespace-pre-line">
                         {para.improved_paragraph}
                       </p>
                     </div>
                   </div>
 
-                  {/* Why it was improved & Key changes */}
                   {isExpanded && (
-                    <div className="p-3.5 bg-white rounded-xl border border-slate-200 text-xs space-y-2">
-                      <div className="text-slate-700 leading-relaxed">
-                        <strong className="text-slate-900 block mb-1">
-                          💡 Tại sao đoạn này được nâng lên {targetBandLabel} (Why & How):
-                        </strong>
-                        <p className="text-slate-600 text-[11px] leading-relaxed">
-                          {para.why_improved}
-                        </p>
+                    <div className="p-3 bg-white rounded-xl border border-slate-200 space-y-2 text-xs">
+                      <div className="text-slate-700 text-[11px] leading-relaxed">
+                        <strong className="text-slate-900">Tại sao đoạn này đạt điểm cao hơn: </strong>
+                        {para.why_improved}
                       </div>
 
                       {para.key_changes && para.key_changes.length > 0 && (
@@ -446,7 +580,8 @@ function renderHighlightedSegments(
   fullText: string,
   errors: ErrorInstance[],
   onSelectError: (err: ErrorInstance) => void,
-  selectedError: ErrorInstance | null
+  selectedError: ErrorInstance | null,
+  activeFilter: 'ALL' | 'GRAMMAR' | 'SPELLING_PUNCT' | 'VOCAB'
 ) {
   if (!errors || errors.length === 0) return fullText;
 
@@ -509,17 +644,21 @@ function renderHighlightedSegments(
     }
 
     const isSelected = selectedError?.original_text === m.error.original_text;
+    const catInfo = categorizeError(m.error.error_tag_code);
+    const isMuted = activeFilter !== 'ALL' && catInfo.type !== activeFilter;
 
     // Highlighted element
     elements.push(
       <mark
         key={`match-${idx}`}
         onClick={() => onSelectError(m.error)}
-        title={`Bấm để xem sửa lỗi: ${m.error.explanation}`}
+        title={`Bấm để xem sửa lỗi (${catInfo.label}): ${m.error.explanation}`}
         className={`px-1 py-0.5 rounded cursor-pointer transition font-bold ${
-          isSelected
-            ? 'bg-rose-500 text-white ring-2 ring-rose-600/50 shadow-sm'
-            : 'bg-rose-100 text-rose-900 border-b-2 border-rose-500 hover:bg-rose-200'
+          isMuted
+            ? 'opacity-40 bg-slate-200 text-slate-700 hover:opacity-100'
+            : isSelected
+            ? catInfo.markSelectedClass
+            : catInfo.markClass
         }`}
       >
         {fullText.substring(m.start, m.end)}

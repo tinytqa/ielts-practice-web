@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  Mic, Square, Play, Pause, Sparkles, Volume2, Clock, 
+  Mic, MicOff, Square, Play, Pause, Sparkles, Volume2, Clock, 
   RotateCcw, AlertCircle, CheckCircle2, ChevronRight, BookOpen, 
   Lightbulb, Copy, HelpCircle, ArrowRight, ArrowLeft, Award, Layers, Check,
   X, Info, FileText, Lock, Radio, User, FastForward, RefreshCw, VolumeX, ShieldAlert, Zap,
-  Video, ExternalLink, Users, PhoneCall, Share2
+  Video, ExternalLink, Users, PhoneCall, Share2, Upload, FileAudio, Activity, Loader2
 } from 'lucide-react';
 import { createGoogleMeetSpace } from '../lib/googleWorkspace';
 import { googleSignIn, getAccessToken } from '../lib/firebaseAuth';
@@ -385,6 +385,146 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
     PART_2: null,
     PART_3: null
   });
+  const [partAudioBlobs, setPartAudioBlobs] = useState<Record<string, Blob | null>>({
+    PART_1: null,
+    PART_2: null,
+    PART_3: null
+  });
+  const [isTranscribing, setIsTranscribing] = useState<boolean>(false);
+  const [transcriptionStatus, setTranscriptionStatus] = useState<string>('');
+  const [audioLevel, setAudioLevel] = useState<number>(0);
+  const [testMicActive, setTestMicActive] = useState<boolean>(false);
+
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
+  const testMicStreamRef = useRef<MediaStream | null>(null);
+
+  // Helper to convert Blob to base64
+  const blobToBase64 = (blob: Blob): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const res = reader.result as string;
+        const base64data = res.includes(',') ? res.split(',')[1] : res;
+        resolve(base64data);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  };
+
+  // Audio Level Metering via Web Audio AnalyserNode
+  const startAudioMeter = (stream: MediaStream) => {
+    try {
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioContextClass) return;
+      const ctx = new AudioContextClass();
+      audioContextRef.current = ctx;
+      const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      analyserRef.current = analyser;
+
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      const updateLevel = () => {
+        if (!analyserRef.current) return;
+        analyserRef.current.getByteFrequencyData(dataArray);
+        let sum = 0;
+        for (let i = 0; i < dataArray.length; i++) {
+          sum += dataArray[i];
+        }
+        const avg = sum / dataArray.length;
+        const normalized = Math.min(100, Math.round((avg / 128) * 100));
+        setAudioLevel(normalized);
+        animationFrameRef.current = requestAnimationFrame(updateLevel);
+      };
+      updateLevel();
+    } catch (e) {
+      console.warn("Audio meter setup notice:", e);
+    }
+  };
+
+  const stopAudioMeter = () => {
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+    if (audioContextRef.current) {
+      try {
+        audioContextRef.current.close();
+      } catch (e) {}
+      audioContextRef.current = null;
+    }
+    analyserRef.current = null;
+    setAudioLevel(0);
+  };
+
+  // Live Microphone Test toggle
+  const toggleTestMic = async () => {
+    if (testMicActive) {
+      if (testMicStreamRef.current) {
+        testMicStreamRef.current.getTracks().forEach(t => t.stop());
+        testMicStreamRef.current = null;
+      }
+      stopAudioMeter();
+      setTestMicActive(false);
+    } else {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        testMicStreamRef.current = stream;
+        startAudioMeter(stream);
+        setTestMicActive(true);
+      } catch (err) {
+        console.error("Test mic error:", err);
+        alert("Không thể truy cập Microphone để kiểm tra. Vui lòng cho phép quyền truy cập micro trong trình duyệt.");
+      }
+    }
+  };
+
+  // AI Audio Transcription using Gemini STT
+  const transcribeAudioBlob = async (blob: Blob, partKey?: string, contextPrompt?: string): Promise<string> => {
+    setIsTranscribing(true);
+    setTranscriptionStatus('🤖 Gemini AI đang lắng nghe và trích xuất giọng nói tiếng Anh...');
+    try {
+      const base64 = await blobToBase64(blob);
+      const mimeType = blob.type || 'audio/webm';
+
+      const res = await fetch('/api/speaking/transcribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          audio_base64: base64,
+          mime_type: mimeType,
+          context_prompt: contextPrompt || ''
+        })
+      });
+
+      const data = await res.json();
+      if (data.transcript && data.transcript.trim()) {
+        const transcriptText = data.transcript.trim();
+        if (partKey) {
+          setPartTranscripts(prev => ({
+            ...prev,
+            [partKey]: transcriptText
+          }));
+        }
+        setTranscriptionStatus('✅ Đã trích xuất giọng nói thành công!');
+        return transcriptText;
+      } else {
+        setTranscriptionStatus('⚠️ Chưa nhận diện được từ ngữ rõ ràng từ file thu âm.');
+        return '';
+      }
+    } catch (err: any) {
+      console.error('Transcription error:', err);
+      setTranscriptionStatus('❌ Lỗi khi trích xuất giọng nói: ' + (err.message || 'Vui lòng thử lại'));
+      return '';
+    } finally {
+      setIsTranscribing(false);
+      setTimeout(() => setTranscriptionStatus(''), 4000);
+    }
+  };
 
   // Part 2 Prep & Talk Timers
   const [prepTimeLeft, setPrepTimeLeft] = useState<number>(60);
@@ -411,6 +551,27 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
   const [createdMeetSpace, setCreatedMeetSpace] = useState<{ spaceName: string; meetingUri: string; meetingCode: string } | null>(null);
   const [showMeetModal, setShowMeetModal] = useState<boolean>(false);
   const [isCopiedMeetLink, setIsCopiedMeetLink] = useState<boolean>(false);
+  const [copiedUpgradeIdx, setCopiedUpgradeIdx] = useState<number | null>(null);
+  const [playingUpgradeIdx, setPlayingUpgradeIdx] = useState<number | null>(null);
+
+  const handlePlayUpgradeAudio = (text: string, idx: number) => {
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+      setPlayingUpgradeIdx(idx);
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = 'en-GB';
+      utterance.rate = 0.92;
+      utterance.onend = () => setPlayingUpgradeIdx(null);
+      utterance.onerror = () => setPlayingUpgradeIdx(null);
+      window.speechSynthesis.speak(utterance);
+    }
+  };
+
+  const handleCopyUpgradeText = (text: string, idx: number) => {
+    navigator.clipboard.writeText(text);
+    setCopiedUpgradeIdx(idx);
+    setTimeout(() => setCopiedUpgradeIdx(null), 2500);
+  };
 
   const handleCreateGoogleMeet = async () => {
     setIsCreatingMeet(true);
@@ -461,6 +622,9 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
   const hasSpokenRef = useRef<boolean>(false);
   const silenceTimerRef = useRef<any>(null);
   const simSpeechRecognitionRef = useRef<any>(null);
+  const isAdvancingSimRef = useRef<boolean>(false);
+  const examinerSafetyTimeoutRef = useRef<any>(null);
+  const examinerSpeechSessionRef = useRef<number>(0);
 
   // Grading States
   const [isGrading, setIsGrading] = useState<boolean>(false);
@@ -468,6 +632,14 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
   const [activeTab, setActiveTab] = useState<'QUESTIONS' | 'SAMPLE_9' | 'SAMPLE_8' | 'VOCAB' | 'CRITERIA'>('QUESTIONS');
   const [showRubricModal, setShowRubricModal] = useState<boolean>(false);
   const [rubricFilterBand, setRubricFilterBand] = useState<number | 'ALL'>('ALL');
+  const resultsRef = useRef<HTMLDivElement | null>(null);
+
+  // Auto-scroll to results when score is available
+  useEffect(() => {
+    if (gradingResult && resultsRef.current) {
+      resultsRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [gradingResult]);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -577,13 +749,34 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
 
   // Browser Speech Synthesis for British Examiner Voice
   const speakExaminerUtterance = (text: string, onEndCallback: () => void) => {
+    // Increment session ID to cancel any pending timeouts from previous questions
+    examinerSpeechSessionRef.current += 1;
+    const currentSession = examinerSpeechSessionRef.current;
+
+    if (examinerSafetyTimeoutRef.current) {
+      clearTimeout(examinerSafetyTimeoutRef.current);
+      examinerSafetyTimeoutRef.current = null;
+    }
+
+    // ALWAYS stop and mute candidate mic completely while examiner is reading
+    stopSimMicRecording();
+    setIsRecording(false);
+    setAudioLevel(0);
+
     if (!('speechSynthesis' in window)) {
       setSimExaminerSpeech(text);
-      setTimeout(onEndCallback, 3000);
+      examinerSafetyTimeoutRef.current = setTimeout(() => {
+        if (examinerSpeechSessionRef.current === currentSession) {
+          onEndCallback();
+        }
+      }, 3000);
       return;
     }
 
-    window.speechSynthesis.cancel();
+    try {
+      window.speechSynthesis.cancel();
+    } catch (e) {}
+
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = 'en-GB';
     utterance.rate = 0.95; // Official IELTS pace
@@ -596,7 +789,12 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
     let finished = false;
     const triggerFinish = () => {
       if (finished) return;
+      if (examinerSpeechSessionRef.current !== currentSession) return;
       finished = true;
+      if (examinerSafetyTimeoutRef.current) {
+        clearTimeout(examinerSafetyTimeoutRef.current);
+        examinerSafetyTimeoutRef.current = null;
+      }
       setIsSpeakingExaminer(false);
       onEndCallback();
     };
@@ -607,19 +805,32 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
       triggerFinish();
     };
 
-    // Fallback timer for browsers where utterance.onend might be delayed
-    const wordCount = text.split(/\s+/).length;
-    const maxDurationMs = Math.max(3000, (wordCount / 2.2) * 1000 + 2000);
-    const safetyTimeout = setTimeout(triggerFinish, maxDurationMs + 3000);
+    // Fallback timer only if onend is never triggered by the browser
+    const wordCount = text.split(/\s+/).filter(Boolean).length;
+    const maxDurationMs = Math.max(3000, (wordCount / 2.0) * 1000 + 3500);
+    examinerSafetyTimeoutRef.current = setTimeout(triggerFinish, maxDurationMs);
 
     utterance.onstart = () => {
+      if (examinerSpeechSessionRef.current !== currentSession) return;
       setIsSpeakingExaminer(true);
+      // Double check candidate mic is strictly off during speech
+      stopSimMicRecording();
+      setIsRecording(false);
+      setAudioLevel(0);
     };
 
-    window.speechSynthesis.speak(utterance);
+    try {
+      window.speechSynthesis.speak(utterance);
+    } catch (e) {
+      console.warn("SpeechSynthesis speak error:", e);
+      triggerFinish();
+    }
   };
 
   const handlePlayExaminerAudio = (text: string) => {
+    stopSimMicRecording();
+    setIsRecording(false);
+    setAudioLevel(0);
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(text);
@@ -632,6 +843,55 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
     }
   };
 
+  // Stop Simulation Recording and return the accumulated Audio Blob
+  const stopSimRecordingAndGetBlob = (): Promise<Blob | null> => {
+    return new Promise((resolve) => {
+      stopAudioMeter();
+      if (speechRecognitionRef.current) {
+        try {
+          speechRecognitionRef.current.stop();
+        } catch (e) {}
+        speechRecognitionRef.current = null;
+      }
+
+      if (!mediaRecorderRef.current || mediaRecorderRef.current.state === 'inactive') {
+        setIsRecording(false);
+        if (audioChunksRef.current.length > 0) {
+          const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+          resolve(audioBlob);
+        } else {
+          resolve(null);
+        }
+        return;
+      }
+
+      mediaRecorderRef.current.onstop = () => {
+        setIsRecording(false);
+        if (audioChunksRef.current.length > 0) {
+          const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+          resolve(audioBlob);
+        } else {
+          resolve(null);
+        }
+      };
+
+      try {
+        if (mediaRecorderRef.current.state === 'recording') {
+          mediaRecorderRef.current.requestData();
+        }
+        mediaRecorderRef.current.stop();
+      } catch (e) {
+        setIsRecording(false);
+        if (audioChunksRef.current.length > 0) {
+          const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+          resolve(audioBlob);
+        } else {
+          resolve(null);
+        }
+      }
+    });
+  };
+
   // Start Candidate Recording for a specific Simulation Question
   const startSimMicRecording = async () => {
     try {
@@ -641,24 +901,33 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
       lastSpokenTimestampRef.current = Date.now();
 
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream);
+      startAudioMeter(stream);
+
+      let options: MediaRecorderOptions = {};
+      if (typeof MediaRecorder !== 'undefined') {
+        if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+          options = { mimeType: 'audio/webm;codecs=opus' };
+        } else if (MediaRecorder.isTypeSupported('audio/webm')) {
+          options = { mimeType: 'audio/webm' };
+        } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+          options = { mimeType: 'audio/mp4' };
+        }
+      }
+
+      const mediaRecorder = new MediaRecorder(stream, options);
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
 
       mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+        if (e.data && e.data.size > 0) {
+          audioChunksRef.current.push(e.data);
+        }
       };
 
-      mediaRecorder.onstop = () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        const audioUrl = URL.createObjectURL(audioBlob);
-        setPartAudioUrls(prev => ({ ...prev, [selectedPart]: audioUrl }));
-      };
-
-      mediaRecorder.start();
+      mediaRecorder.start(250); // Flush chunks every 250ms
       setIsRecording(true);
 
-      // Start Speech Recognition
+      // Start Speech Recognition for instant visual feedback on screen
       const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
       if (SpeechRecognition) {
         try {
@@ -685,7 +954,7 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
           recognition.start();
           speechRecognitionRef.current = recognition;
         } catch (e) {
-          console.warn("Speech recognition error:", e);
+          console.warn("Speech recognition notice:", e);
         }
       }
     } catch (err) {
@@ -695,6 +964,7 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
   };
 
   const stopSimMicRecording = () => {
+    stopAudioMeter();
     if (mediaRecorderRef.current && isRecording) {
       try {
         mediaRecorderRef.current.stop();
@@ -709,28 +979,28 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
     }
   };
 
-  // Save current question answer to transcripts
-  const saveCurrentSimQuestionAnswer = () => {
-    const answer = simCurrentAnswer.trim();
-    if (!answer) return;
-
-    if (selectedPart === 'PART_1') {
-      const qList = SPEAKING_3_PARTS_DATA.PART_1.questions || [];
-      const qText = qList[simQuestionIdx] || `Question ${simQuestionIdx + 1}`;
-      simQuestionAnswersRef.current.PART_1[simQuestionIdx] = `Q${simQuestionIdx + 1}: ${qText}\nCandidate Answer: ${answer}`;
-      
-      const compiledP1 = simQuestionAnswersRef.current.PART_1.filter(Boolean).join('\n\n');
-      setPartTranscripts(prev => ({ ...prev, PART_1: compiledP1 }));
-    } else if (selectedPart === 'PART_2') {
-      simQuestionAnswersRef.current.PART_2 = `Cue Card: Describe an unforgettable advertisement that you saw.\nCandidate Answer: ${answer}`;
-      setPartTranscripts(prev => ({ ...prev, PART_2: simQuestionAnswersRef.current.PART_2 }));
-    } else if (selectedPart === 'PART_3') {
-      const qList = SPEAKING_3_PARTS_DATA.PART_3.questions || [];
-      const qText = qList[simQuestionIdx] || `Question ${simQuestionIdx + 1}`;
-      simQuestionAnswersRef.current.PART_3[simQuestionIdx] = `Q${simQuestionIdx + 1}: ${qText}\nCandidate Answer: ${answer}`;
-      
-      const compiledP3 = simQuestionAnswersRef.current.PART_3.filter(Boolean).join('\n\n');
-      setPartTranscripts(prev => ({ ...prev, PART_3: compiledP3 }));
+  // Manual Trigger to Transcribe Current Audio Blob with Gemini AI STT in Simulation
+  const handleManualSimSTT = async () => {
+    if (audioChunksRef.current.length === 0 && !isRecording) {
+      alert("Chưa có đoạn ghi âm nào để trích xuất. Vui lòng nói vào micro trước!");
+      return;
+    }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      mediaRecorderRef.current.requestData();
+    }
+    const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+    if (blob.size < 1000) {
+      alert("Bản thu âm quá ngắn. Vui lòng nói câu trả lời của bạn vào micro.");
+      return;
+    }
+    const qList = SPEAKING_3_PARTS_DATA[selectedPart]?.questions || [];
+    const qText = selectedPart === 'PART_2' 
+      ? `Part 2 Cue Card: ${currentData.cueCard?.topic}`
+      : `Question: ${qList[simQuestionIdx] || ''}`;
+    const resText = await transcribeAudioBlob(blob, undefined, qText);
+    if (resText) {
+      setSimCurrentAnswer(resText);
+      hasSpokenRef.current = true;
     }
   };
 
@@ -782,38 +1052,86 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
   };
 
   // Called when silence pause is detected or user clicks "Next Question"
-  const handleSimAdvanceNext = () => {
-    stopSimMicRecording();
-    saveCurrentSimQuestionAnswer();
-    setSimCurrentAnswer('');
+  const handleSimAdvanceNext = async () => {
+    if (isTranscribing || isAdvancingSimRef.current) return;
+    isAdvancingSimRef.current = true;
 
-    if (selectedPart === 'PART_1') {
-      if (simQuestionIdx < 4) {
-        const nextIdx = simQuestionIdx + 1;
-        setSimQuestionIdx(nextIdx);
-        handleAskQuestionInSim('PART_1', nextIdx);
-      } else {
-        // Part 1 Complete -> Transition to Part 2
-        setSelectedPart('PART_2');
-        setSimPhase('EXAMINER_SPEAKING');
-        
-        const part2Speech = `Thank you. That brings us to the end of Part 1. Now we will move to Part 2. Here is your cue card topic: Describe an unforgettable advertisement that you saw. You have one minute to prepare your notes, and then you will speak for two minutes. Your one minute preparation time begins now.`;
-        
-        speakExaminerUtterance(part2Speech, () => {
-          setSimPhase('PART2_PREP');
-          setPrepTimeLeft(60);
-          setIsPrepActive(true);
-        });
+    try {
+      setIsTranscribing(true);
+      setTranscriptionStatus('🤖 Đang lưu & trích xuất câu trả lời của bạn...');
+
+      // 1. Stop mic and get audio blob for this question
+      const audioBlob = await stopSimRecordingAndGetBlob();
+
+      let answer = simCurrentAnswer.trim();
+
+      // 2. If speech recognition didn't catch speech (< 3 words) but audio exists:
+      if (audioBlob && audioBlob.size > 2000 && answer.split(/\s+/).filter(Boolean).length < 3) {
+        const qList = SPEAKING_3_PARTS_DATA[selectedPart]?.questions || [];
+        const qText = qList[simQuestionIdx] || '';
+        const promptTitle = `Topic: ${currentData.topic}. Question: ${qText}`;
+        try {
+          const extracted = await transcribeAudioBlob(audioBlob, undefined, promptTitle);
+          if (extracted) {
+            answer = extracted;
+          }
+        } catch (e) {
+          console.warn("Auto STT extraction notice:", e);
+        }
       }
-    } else if (selectedPart === 'PART_3') {
-      if (simQuestionIdx < 4) {
-        const nextIdx = simQuestionIdx + 1;
-        setSimQuestionIdx(nextIdx);
-        handleAskQuestionInSim('PART_3', nextIdx);
-      } else {
-        // Part 3 Complete -> Test Ends!
-        handleFinishFullInteractiveExam();
+
+      // 3. Save to question answers
+      const currentQIdx = simQuestionIdx;
+      const currentPart = selectedPart;
+      const qList = SPEAKING_3_PARTS_DATA[currentPart]?.questions || [];
+      const qText = qList[currentQIdx] || `Question ${currentQIdx + 1}`;
+
+      if (currentPart === 'PART_1') {
+        simQuestionAnswersRef.current.PART_1[currentQIdx] = `Q${currentQIdx + 1}: ${qText}\nCandidate Answer: ${answer || '(Chưa có câu trả lời)'}`;
+        const compiledP1 = simQuestionAnswersRef.current.PART_1.filter(Boolean).join('\n\n');
+        setPartTranscripts(prev => ({ ...prev, PART_1: compiledP1 }));
+      } else if (currentPart === 'PART_3') {
+        simQuestionAnswersRef.current.PART_3[currentQIdx] = `Q${currentQIdx + 1}: ${qText}\nCandidate Answer: ${answer || '(Chưa có câu trả lời)'}`;
+        const compiledP3 = simQuestionAnswersRef.current.PART_3.filter(Boolean).join('\n\n');
+        setPartTranscripts(prev => ({ ...prev, PART_3: compiledP3 }));
       }
+
+      // 4. Reset current answer state
+      setSimCurrentAnswer('');
+      setIsTranscribing(false);
+      setTranscriptionStatus('');
+
+      // 5. Advance
+      if (currentPart === 'PART_1') {
+        if (currentQIdx < 4) {
+          const nextIdx = currentQIdx + 1;
+          setSimQuestionIdx(nextIdx);
+          handleAskQuestionInSim('PART_1', nextIdx);
+        } else {
+          // Part 1 Complete -> Transition to Part 2
+          setSelectedPart('PART_2');
+          setSimPhase('EXAMINER_SPEAKING');
+          
+          const part2Speech = `Thank you. That brings us to the end of Part 1. Now we will move to Part 2. Here is your cue card topic: Describe an unforgettable advertisement that you saw. You have one minute to prepare your notes, and then you will speak for two minutes. Your one minute preparation time begins now.`;
+          
+          speakExaminerUtterance(part2Speech, () => {
+            setSimPhase('PART2_PREP');
+            setPrepTimeLeft(60);
+            setIsPrepActive(true);
+          });
+        }
+      } else if (currentPart === 'PART_3') {
+        if (currentQIdx < 4) {
+          const nextIdx = currentQIdx + 1;
+          setSimQuestionIdx(nextIdx);
+          handleAskQuestionInSim('PART_3', nextIdx);
+        } else {
+          // Part 3 Complete -> Test Ends!
+          handleFinishFullInteractiveExam();
+        }
+      }
+    } finally {
+      isAdvancingSimRef.current = false;
     }
   };
 
@@ -833,23 +1151,51 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
   };
 
   // Called when Part 2 speaking is finished -> Transition to Part 3
-  const handlePart2FinishedInSim = () => {
-    stopSimMicRecording();
-    setIsTalkActive(false);
-    saveCurrentSimQuestionAnswer();
-    setSimCurrentAnswer('');
+  const handlePart2FinishedInSim = async () => {
+    if (isTranscribing || isAdvancingSimRef.current) return;
+    isAdvancingSimRef.current = true;
 
-    setSelectedPart('PART_3');
-    setSimQuestionIdx(0);
-    setSimPhase('EXAMINER_SPEAKING');
+    try {
+      setIsTranscribing(true);
+      setTranscriptionStatus('🤖 Đang lưu & trích xuất bài nói Part 2 Cue Card...');
 
-    const q1 = SPEAKING_3_PARTS_DATA.PART_3.questions?.[0] || "How important do you think art is in our daily lives?";
-    const part3Speech = `Thank you. That is the end of Part 2. Now let's move on to Part 3 with further discussion questions regarding Art and Society. First question: ${q1}`;
+      const audioBlob = await stopSimRecordingAndGetBlob();
+      setIsTalkActive(false);
 
-    speakExaminerUtterance(part3Speech, () => {
-      setSimPhase('CANDIDATE_RECORDING');
-      startSimMicRecording();
-    });
+      let answer = simCurrentAnswer.trim();
+      if (audioBlob && audioBlob.size > 2000 && answer.split(/\s+/).filter(Boolean).length < 4) {
+        const promptTitle = `Part 2 Cue Card: Describe an unforgettable advertisement that you saw. Points: where you saw it, what kind of advertisement it was, product advertised, how you felt.`;
+        try {
+          const extracted = await transcribeAudioBlob(audioBlob, undefined, promptTitle);
+          if (extracted) {
+            answer = extracted;
+          }
+        } catch (e) {
+          console.warn("Part 2 STT notice:", e);
+        }
+      }
+
+      simQuestionAnswersRef.current.PART_2 = `Cue Card: Describe an unforgettable advertisement that you saw.\nCandidate Answer: ${answer || '(Chưa có bài nói Part 2)'}`;
+      setPartTranscripts(prev => ({ ...prev, PART_2: simQuestionAnswersRef.current.PART_2 }));
+
+      setSimCurrentAnswer('');
+      setIsTranscribing(false);
+      setTranscriptionStatus('');
+
+      setSelectedPart('PART_3');
+      setSimQuestionIdx(0);
+      setSimPhase('EXAMINER_SPEAKING');
+
+      const q1 = SPEAKING_3_PARTS_DATA.PART_3.questions?.[0] || "How important do you think art is in our daily lives?";
+      const part3Speech = `Thank you. That is the end of Part 2. Now let's move on to Part 3 with further discussion questions regarding Art and Society. First question: ${q1}`;
+
+      speakExaminerUtterance(part3Speech, () => {
+        setSimPhase('CANDIDATE_RECORDING');
+        startSimMicRecording();
+      });
+    } finally {
+      isAdvancingSimRef.current = false;
+    }
   };
 
   // Called when entire exam finishes
@@ -890,6 +1236,7 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
   const handleStartPracticeRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      startAudioMeter(stream);
       const mediaRecorder = new MediaRecorder(stream);
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
@@ -898,10 +1245,74 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
         if (e.data.size > 0) audioChunksRef.current.push(e.data);
       };
 
-      mediaRecorder.onstop = () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        const audioUrl = URL.createObjectURL(audioBlob);
-        setPartAudioUrls(prev => ({ ...prev, [selectedPart]: audioUrl }));
+      mediaRecorder.onstop = async () => {
+        stopAudioMeter();
+        if (audioChunksRef.current.length > 0) {
+          const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+          const audioUrl = URL.createObjectURL(audioBlob);
+          setPartAudioUrls(prev => ({ ...prev, [selectedPart]: audioUrl }));
+          setPartAudioBlobs(prev => ({ ...prev, [selectedPart]: audioBlob }));
+
+          // Automatically extract and grade immediately
+          setIsGrading(true);
+          setTranscriptionStatus('🤖 Đang trích xuất giọng nói và chấm điểm bài làm của bạn...');
+
+          let text = (partTranscripts[selectedPart] || '').trim();
+          const wordCount = text.split(/\s+/).filter(Boolean).length;
+          
+          if (wordCount < 3) {
+            const promptTitle = selectedPart === 'PART_2' 
+              ? `${currentData.cueCard?.topic}. Points: ${currentData.cueCard?.bulletPoints.join(', ')}`
+              : `Topic: ${currentData.topic}. Questions: ${currentData.questions?.join(' | ')}`;
+            try {
+              const extracted = await transcribeAudioBlob(audioBlob, selectedPart, promptTitle);
+              if (extracted) text = extracted;
+            } catch (e) {
+              console.warn("Auto transcribe error on stop:", e);
+            }
+          }
+
+          if (!text) {
+            text = (partTranscripts[selectedPart] || '').trim();
+          }
+
+          // Immediately grade and reveal scores
+          try {
+            const promptTitle = selectedPart === 'PART_2' 
+              ? `${currentData.cueCard?.topic}. Points: ${currentData.cueCard?.bulletPoints.join(', ')}`
+              : `Topic: ${currentData.topic}. Questions: ${currentData.questions?.join(' | ')}`;
+
+            let audioBase64 = undefined;
+            let mimeType = undefined;
+            try {
+              audioBase64 = await blobToBase64(audioBlob);
+              mimeType = audioBlob.type || 'audio/webm';
+            } catch (bErr) {}
+
+            const res = await fetch('/api/grading/speaking', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                user_id: 'u_student',
+                part: selectedPart,
+                prompt_title: promptTitle,
+                transcript: text,
+                audio_base64: audioBase64,
+                mime_type: mimeType
+              })
+            });
+            const data = await res.json();
+            if (data?.result) {
+              setGradingResult(data.result);
+              if (onCompleted) onCompleted();
+            }
+          } catch (err) {
+            console.error("Auto grading error:", err);
+          } finally {
+            setIsGrading(false);
+            setTranscriptionStatus('');
+          }
+        }
       };
 
       mediaRecorder.start();
@@ -928,11 +1339,11 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
             }
           };
 
-          recognition.onerror = (e: any) => console.warn("Speech rec error:", e);
+          recognition.onerror = (e: any) => console.warn("Speech rec notice:", e);
           recognition.start();
           speechRecognitionRef.current = recognition;
         } catch (recErr) {
-          console.warn("Speech rec init:", recErr);
+          console.warn("Speech rec init notice:", recErr);
         }
       }
 
@@ -942,11 +1353,12 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
       }
     } catch (err) {
       console.error("Microphone error:", err);
-      alert("Không thể truy cập Microphone. Bạn có thể nhập hoặc dán nội dung bài nói vào khung transcript bên dưới.");
+      alert("Không thể truy cập Microphone. Vui lòng cho phép quyền Microphone trong trình duyệt hoặc sử dụng tính năng tải file âm thanh / dán transcript.");
     }
   };
 
   const handleStopPracticeRecording = () => {
+    stopAudioMeter();
     if (mediaRecorderRef.current && isRecording) {
       mediaRecorderRef.current.stop();
       setIsRecording(false);
@@ -958,6 +1370,35 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
       } catch (e) {}
       speechRecognitionRef.current = null;
     }
+  };
+
+  // Upload custom audio file
+  const handleUploadAudioFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const audioUrl = URL.createObjectURL(file);
+    setPartAudioUrls(prev => ({ ...prev, [selectedPart]: audioUrl }));
+    setPartAudioBlobs(prev => ({ ...prev, [selectedPart]: file }));
+
+    const promptTitle = selectedPart === 'PART_2' 
+      ? `${currentData.cueCard?.topic}. Points: ${currentData.cueCard?.bulletPoints.join(', ')}`
+      : `Topic: ${currentData.topic}. Questions: ${currentData.questions?.join(' | ')}`;
+
+    await transcribeAudioBlob(file, selectedPart, promptTitle);
+  };
+
+  // Re-transcribe current recorded or uploaded audio
+  const handleManualTranscribe = async () => {
+    const blob = partAudioBlobs[selectedPart];
+    if (!blob) {
+      alert("Chưa có file ghi âm hoặc audio tải lên để trích xuất giọng nói!");
+      return;
+    }
+    const promptTitle = selectedPart === 'PART_2' 
+      ? `${currentData.cueCard?.topic}. Points: ${currentData.cueCard?.bulletPoints.join(', ')}`
+      : `Topic: ${currentData.topic}. Questions: ${currentData.questions?.join(' | ')}`;
+    await transcribeAudioBlob(blob, selectedPart, promptTitle);
   };
 
   const handleStartPrep = () => {
@@ -986,15 +1427,25 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
 
   // Grade Single Part (Practice Mode)
   const handleGradeSinglePart = async () => {
-    const recordedAudio = partAudioUrls[selectedPart];
+    const recordedBlob = partAudioBlobs[selectedPart];
+    const recordedAudioUrl = partAudioUrls[selectedPart];
     let text = (partTranscripts[selectedPart] || '').trim();
     
-    if (!text && recordedAudio) {
-      text = `[Candidate submitted spoken audio response via microphone for ${selectedPart.replace('_', ' ')}: Topic "${currentData.topic || currentData.cueCard?.topic}"]`;
+    if (!text && (recordedBlob || recordedAudioUrl)) {
+      // If we have an audio blob but transcript is empty, transcribe first!
+      if (recordedBlob) {
+        const promptTitle = selectedPart === 'PART_2' 
+          ? `${currentData.cueCard?.topic}. Points: ${currentData.cueCard?.bulletPoints.join(', ')}`
+          : `Topic: ${currentData.topic}. Questions: ${currentData.questions?.join(' | ')}`;
+        text = await transcribeAudioBlob(recordedBlob, selectedPart, promptTitle);
+      }
+      if (!text) {
+        text = (partTranscripts[selectedPart] || '').trim();
+      }
     }
 
     if (!text || isGrading) {
-      alert("Vui lòng ghi âm hoặc nhập nội dung bài nói của bạn trước khi bấm Chấm điểm!");
+      alert("Vui lòng ghi âm, tải file âm thanh hoặc nhập nội dung bài nói trước khi bấm Chấm điểm!");
       return;
     }
 
@@ -1005,6 +1456,13 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
         ? `${currentData.cueCard?.topic}. Points: ${currentData.cueCard?.bulletPoints.join(', ')}`
         : `Topic: ${currentData.topic}. Questions: ${currentData.questions?.join(' | ')}`;
 
+      let audioBase64 = undefined;
+      let mimeType = undefined;
+      if (recordedBlob) {
+        audioBase64 = await blobToBase64(recordedBlob);
+        mimeType = recordedBlob.type || 'audio/webm';
+      }
+
       const res = await fetch('/api/grading/speaking', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1012,14 +1470,17 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
           user_id: 'u_student',
           part: selectedPart,
           prompt_title: promptTitle,
-          transcript: text
+          transcript: text,
+          audio_base64: audioBase64,
+          mime_type: mimeType
         })
       });
       const data = await res.json();
       setGradingResult(data.result);
       if (onCompleted) onCompleted();
     } catch (err) {
-      console.error(err);
+      console.error("Grading error:", err);
+      alert("Có lỗi xảy ra khi chấm điểm. Vui lòng thử lại!");
     } finally {
       setIsGrading(false);
     }
@@ -1027,18 +1488,18 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
 
   // Grade Full 3-Part Simulation Exam
   const handleGradeFullSimulation = async () => {
-    const p1 = (partTranscripts.PART_1 || '').trim() || (partAudioUrls.PART_1 ? '[Candidate submitted audio response for Part 1 - Weather]' : '');
-    const p2 = (partTranscripts.PART_2 || '').trim() || (partAudioUrls.PART_2 ? '[Candidate submitted audio response for Part 2 - Unforgettable Ad]' : '');
-    const p3 = (partTranscripts.PART_3 || '').trim() || (partAudioUrls.PART_3 ? '[Candidate submitted audio response for Part 3 - Art & Society]' : '');
-    
-    const hasAnySubmission = Boolean(p1 || p2 || p3 || partAudioUrls.PART_1 || partAudioUrls.PART_2 || partAudioUrls.PART_3);
+    const p1Answered = simQuestionAnswersRef.current.PART_1.filter(Boolean).join('\n\n') || (partTranscripts.PART_1 || '').trim();
+    const p2Answered = simQuestionAnswersRef.current.PART_2.trim() || (partTranscripts.PART_2 || '').trim();
+    const p3Answered = simQuestionAnswersRef.current.PART_3.filter(Boolean).join('\n\n') || (partTranscripts.PART_3 || '').trim();
+
+    const hasAnySubmission = Boolean(p1Answered || p2Answered || p3Answered || partAudioUrls.PART_1 || partAudioUrls.PART_2 || partAudioUrls.PART_3);
 
     if (!hasAnySubmission || isGrading) {
       alert("Vui lòng ghi âm hoặc nhập câu trả lời ít nhất 1 Part trước khi nộp toàn bài thi Speaking!");
       return;
     }
 
-    const fullTranscript = `[PART 1 - Weather]:\n${p1 || '(Thí sinh chưa nộp câu trả lời Part 1)'}\n\n[PART 2 - Unforgettable Ad Cue Card]:\n${p2 || '(Thí sinh chưa nộp câu trả lời Part 2)'}\n\n[PART 3 - Art & Society]:\n${p3 || '(Thí sinh chưa nộp câu trả lời Part 3)'}`;
+    const fullTranscript = `[PART 1 - Weather]:\n${p1Answered || '(Thí sinh chưa nộp câu trả lời Part 1)'}\n\n[PART 2 - Unforgettable Advertisement Cue Card]:\n${p2Answered || '(Thí sinh chưa nộp câu trả lời Part 2)'}\n\n[PART 3 - Art & Society]:\n${p3Answered || '(Thí sinh chưa nộp câu trả lời Part 3)'}`;
 
     setIsGrading(true);
     try {
@@ -1047,8 +1508,8 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           user_id: 'u_student',
-          part: 'PART_3',
-          prompt_title: 'Full IELTS Speaking Academic Examination (Part 1 Weather, Part 2 Unforgettable Ad, Part 3 Art & Society)',
+          part: 'FULL_EXAM',
+          prompt_title: 'Full IELTS Speaking Academic Examination (Part 1: Weather, Part 2: Unforgettable Advertisement Cue Card, Part 3: Art & Society Discussion)',
           transcript: fullTranscript
         })
       });
@@ -1056,7 +1517,8 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
       setGradingResult(data.result);
       if (onCompleted) onCompleted();
     } catch (err) {
-      console.error(err);
+      console.error("Simulation grading error:", err);
+      alert("Có lỗi xảy ra khi chấm điểm toàn bài. Vui lòng thử lại!");
     } finally {
       setIsGrading(false);
     }
@@ -1389,20 +1851,26 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
                         : 'bg-slate-800 border-slate-700 text-slate-300'
                     }`}>
                       {simPhase === 'EXAMINER_SPEAKING' ? (
-                        <Volume2 className="w-7 h-7 animate-bounce" />
+                        <Volume2 className="w-7 h-7 animate-bounce text-indigo-200" />
                       ) : simPhase === 'CANDIDATE_RECORDING' || simPhase === 'PART2_SPEAKING' ? (
-                        <Mic className="w-7 h-7 animate-pulse" />
+                        <Mic className="w-7 h-7 animate-pulse text-emerald-200" />
                       ) : (
                         <User className="w-7 h-7" />
                       )}
                     </div>
 
                     <div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <span className="font-black text-sm text-white">IELTS Senior Examiner AI</span>
                         <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white/20 text-slate-200">
                           British Council Certified Voice
                         </span>
+                        {simPhase === 'EXAMINER_SPEAKING' && (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-500/40 text-indigo-200 border border-indigo-400 flex items-center gap-1">
+                            <MicOff className="w-3 h-3" />
+                            <span>Micro Giám Khảo: TẮT (Chỉ phát loa)</span>
+                          </span>
+                        )}
                       </div>
 
                       {/* Dynamic Stage Badge */}
@@ -1410,25 +1878,25 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
                         {simPhase === 'EXAMINER_SPEAKING' && (
                           <span className="text-indigo-300 flex items-center gap-1.5">
                             <span className="w-2 h-2 rounded-full bg-indigo-400 animate-ping" />
-                            🗣️ Giám khảo đang đọc câu hỏi... (Vui lòng lắng nghe)
+                            <span>🔊 Giám khảo đang đọc câu hỏi... (Micro của bạn đang TẮT)</span>
                           </span>
                         )}
                         {simPhase === 'CANDIDATE_RECORDING' && (
                           <span className="text-emerald-300 flex items-center gap-1.5 animate-pulse">
                             <span className="w-2.5 h-2.5 rounded-full bg-emerald-400" />
-                            🎙️ Micro đang mở — Hãy trả lời ngay!
+                            <span>🎙️ Micro ĐANG BẬT — Hãy nói câu trả lời của bạn!</span>
                           </span>
                         )}
                         {simPhase === 'PART2_PREP' && (
                           <span className="text-amber-300 flex items-center gap-1.5">
                             <Clock className="w-3.5 h-3.5" />
-                            📝 1 Phút Chuẩn Bị Giấy Nháp cho Part 2...
+                            <span>📝 1 Phút Chuẩn Bị Giấy Nháp cho Part 2 (Micro TẮT)...</span>
                           </span>
                         )}
                         {simPhase === 'PART2_SPEAKING' && (
                           <span className="text-emerald-300 flex items-center gap-1.5">
                             <Mic className="w-3.5 h-3.5" />
-                            🎤 Đang ghi âm bài nói Part 2 (Nói liên tục trong 1-2 phút)
+                            <span>🎤 Micro ĐANG BẬT — Đang ghi âm bài nói Part 2 (1-2 phút)</span>
                           </span>
                         )}
                         {simPhase === 'CONCLUDING' && (
@@ -1467,9 +1935,17 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
 
                 {/* Examiner Speech Transcript Box */}
                 <div className="p-4 bg-black/40 rounded-2xl border border-white/10 space-y-1">
-                  <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400">
-                    Lời Giám Khảo (Examiner Prompt):
-                  </span>
+                  <div className="flex items-center justify-between text-[10px] font-extrabold uppercase tracking-wider text-slate-400">
+                    <span>Lời Giám Khảo (Examiner Prompt):</span>
+                    {simPhase === 'EXAMINER_SPEAKING' ? (
+                      <span className="text-indigo-300 font-semibold flex items-center gap-1">
+                        <Volume2 className="w-3 h-3 text-indigo-400 animate-pulse" />
+                        <span>Loa đang phát giọng đọc</span>
+                      </span>
+                    ) : (
+                      <span className="text-slate-500 font-medium">Giám khảo đang lắng nghe</span>
+                    )}
+                  </div>
                   <p className="text-sm font-serif text-slate-100 leading-relaxed italic">
                     "{simExaminerSpeech || (selectedPart === 'PART_2' ? currentData.cueCard?.topic : currentData.questions?.[simQuestionIdx])}"
                   </p>
@@ -1564,31 +2040,126 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
 
               {/* Real-time Candidate Speech Transcript Box */}
               <div className="space-y-2">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <label className="text-xs font-extrabold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
-                    <Lock className="w-3.5 h-3.5 text-amber-600" />
-                    <span>Nội Dung Câu Trả Lời Của Bạn (Trích Xuất Trực Tiếp):</span>
+                    {simPhase === 'EXAMINER_SPEAKING' ? (
+                      <MicOff className="w-3.5 h-3.5 text-slate-400" />
+                    ) : (
+                      <Mic className="w-3.5 h-3.5 text-emerald-600" />
+                    )}
+                    <span>Nội Dung Câu Trả Lời Của Bạn (Trích Xuất Bằng Gemini AI STT):</span>
                   </label>
-                  <span className="text-[11px] text-slate-500 font-mono">
-                    {simCurrentAnswer.trim() ? simCurrentAnswer.trim().split(/\s+/).filter(Boolean).length : 0} từ
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleManualSimSTT}
+                      disabled={isTranscribing || simPhase === 'EXAMINER_SPEAKING'}
+                      className="px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 disabled:opacity-50 border border-emerald-300 text-emerald-800 text-[11px] font-bold cursor-pointer transition flex items-center gap-1 shadow-2xs"
+                      title="Trích xuất lại giọng nói từ micro bằng AI"
+                    >
+                      {isTranscribing ? <Loader2 className="w-3 h-3 animate-spin text-emerald-600" /> : <Sparkles className="w-3 h-3 text-emerald-600" />}
+                      <span>Trích xuất lại bằng AI</span>
+                    </button>
+                    {isRecording && (
+                      <span className="text-[11px] font-bold text-emerald-600 flex items-center gap-1">
+                        <Activity className="w-3.5 h-3.5 animate-pulse" />
+                        Micro: {audioLevel}%
+                      </span>
+                    )}
+                    <span className="text-[11px] text-slate-500 font-mono">
+                      {simCurrentAnswer.trim() ? simCurrentAnswer.trim().split(/\s+/).filter(Boolean).length : 0} từ
+                    </span>
+                  </div>
                 </div>
+
+                {/* Live VU meter for simulation candidate */}
+                {isRecording && (
+                  <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
+                    <div 
+                      className={`h-full transition-all duration-75 rounded-full ${
+                        audioLevel > 20 ? 'bg-emerald-500' : 'bg-slate-400'
+                      }`}
+                      style={{ width: `${Math.max(5, audioLevel)}%` }}
+                    />
+                  </div>
+                )}
+
+                {/* Status or Transcription in Progress Banner */}
+                {(isTranscribing || transcriptionStatus) && (
+                  <div className={`p-2.5 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 ${
+                    isTranscribing ? 'bg-amber-50 border-amber-300 text-amber-900 animate-pulse' : 'bg-emerald-50 border-emerald-300 text-emerald-900'
+                  }`}>
+                    {isTranscribing ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-600" />
+                    ) : (
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                    )}
+                    <span>{transcriptionStatus || 'AI đang trích xuất giọng nói...'}</span>
+                  </div>
+                )}
 
                 <div className="relative">
                   <textarea
                     rows={4}
                     value={simCurrentAnswer}
-                    readOnly={true}
-                    placeholder="Micro đang lắng nghe câu trả lời của bạn... Các từ sẽ tự động xuất hiện tại đây khi bạn nói."
-                    className="w-full bg-slate-50 border border-slate-300 text-slate-900 rounded-2xl p-4 text-xs font-mono leading-relaxed cursor-not-allowed select-text focus:outline-none shadow-inner"
+                    onChange={(e) => {
+                      setSimCurrentAnswer(e.target.value);
+                      if (e.target.value.trim()) hasSpokenRef.current = true;
+                    }}
+                    placeholder={
+                      simPhase === 'EXAMINER_SPEAKING'
+                        ? 'Giám khảo đang đọc câu hỏi. Micro của bạn đang TẮT để tránh thu tiếng dội âm. Micro sẽ tự động BẬT ngay khi giám khảo đọc xong để bạn trả lời...'
+                        : 'Micro đang BẬT và lắng nghe câu trả lời của bạn... Các từ sẽ tự động xuất hiện tại đây khi bạn nói và được Gemini AI trích xuất chuẩn xác khi chuyển câu (hoặc bạn có thể gõ chỉnh sửa trực tiếp).'
+                    }
+                    className={`w-full bg-white border rounded-2xl p-4 text-xs font-mono leading-relaxed focus:outline-none shadow-inner ${
+                      simPhase === 'EXAMINER_SPEAKING'
+                        ? 'border-indigo-200 text-slate-600 bg-slate-50/50 focus:border-indigo-400'
+                        : 'border-slate-300 text-slate-900 focus:border-emerald-500'
+                    }`}
                   />
                   {simPhase === 'CANDIDATE_RECORDING' && (
-                    <div className="absolute top-3 right-3 flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-rose-100 border border-rose-300 text-[10px] font-bold text-rose-700 animate-pulse">
+                    <div className="absolute top-3 right-3 flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-rose-100 border border-rose-300 text-[10px] font-bold text-rose-700 animate-pulse">
                       <span className="w-2 h-2 rounded-full bg-rose-500" />
-                      <span>REC</span>
+                      <span>REC - MIC BẬT</span>
+                    </div>
+                  )}
+                  {simPhase === 'EXAMINER_SPEAKING' && (
+                    <div className="absolute top-3 right-3 flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-indigo-100 border border-indigo-300 text-[10px] font-bold text-indigo-700">
+                      <MicOff className="w-3 h-3 text-indigo-600" />
+                      <span>MIC TẮT (ĐANG NGHE)</span>
+                    </div>
+                  )}
+                  {simPhase === 'PART2_PREP' && (
+                    <div className="absolute top-3 right-3 flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-100 border border-amber-300 text-[10px] font-bold text-amber-700">
+                      <Clock className="w-3 h-3 text-amber-600" />
+                      <span>CHUẨN BỊ (MIC TẮT)</span>
                     </div>
                   )}
                 </div>
+
+                {/* Question progress pills */}
+                {(selectedPart === 'PART_1' || selectedPart === 'PART_3') && (
+                  <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                    {[0, 1, 2, 3, 4].map((idx) => {
+                      const isCurrent = simQuestionIdx === idx;
+                      const isDone = Boolean(simQuestionAnswersRef.current[selectedPart][idx]);
+                      return (
+                        <span
+                          key={idx}
+                          className={`px-2.5 py-1 rounded-lg text-[11px] font-bold flex items-center gap-1 ${
+                            isCurrent
+                              ? 'bg-emerald-600 text-white shadow-xs'
+                              : isDone
+                              ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                              : 'bg-slate-100 text-slate-500'
+                          }`}
+                        >
+                          {isDone ? '✓ ' : ''}Câu {idx + 1}
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
 
               {/* Simulation Stage Navigation Bar */}
@@ -1605,19 +2176,35 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={handleSimAdvanceNext}
-                    className="px-5 py-2.5 rounded-xl btn-glossy-emerald text-white text-xs font-black transition cursor-pointer flex items-center gap-1.5 shadow-sm"
+                    disabled={isTranscribing}
+                    onClick={() => {
+                      if (selectedPart === 'PART_2') {
+                        handlePart2FinishedInSim();
+                      } else {
+                        handleSimAdvanceNext();
+                      }
+                    }}
+                    className="px-5 py-2.5 rounded-xl btn-glossy-emerald text-white text-xs font-black transition cursor-pointer flex items-center gap-1.5 shadow-sm disabled:opacity-50"
                   >
-                    <span>
-                      {selectedPart === 'PART_1' && simQuestionIdx === 4
-                        ? 'Hoàn thành Part 1 ➔ Sang Part 2'
-                        : selectedPart === 'PART_2'
-                        ? 'Hoàn thành Part 2 ➔ Sang Part 3'
-                        : selectedPart === 'PART_3' && simQuestionIdx === 4
-                        ? 'Hoàn thành bài thi ➔ Nộp chấm điểm'
-                        : 'Trả Lời Xong (Câu Tiếp Theo) ➔'}
-                    </span>
-                    <ChevronRight className="w-4 h-4" />
+                    {isTranscribing ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Đang xử lý STT...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span>
+                          {selectedPart === 'PART_1' && simQuestionIdx === 4
+                            ? 'Hoàn thành Part 1 ➔ Sang Part 2'
+                            : selectedPart === 'PART_2'
+                            ? 'Hoàn thành Part 2 ➔ Sang Part 3'
+                            : selectedPart === 'PART_3' && simQuestionIdx === 4
+                            ? 'Hoàn thành bài thi ➔ Nộp chấm điểm'
+                            : 'Trả Lời Xong (Câu Tiếp Theo) ➔'}
+                        </span>
+                        <ChevronRight className="w-4 h-4" />
+                      </>
+                    )}
                   </button>
                 </div>
               </div>
@@ -1689,17 +2276,35 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
                 <button
                   type="button"
                   onClick={() => {
+                    if (isSpeakingExaminer) {
+                      if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+                      setIsSpeakingExaminer(false);
+                      return;
+                    }
                     if (selectedPart === 'PART_2') {
                       handlePlayExaminerAudio(`Describe an unforgettable advertisement that you saw. You should say: where you saw it, what kind of advertisement it was, what product or service was advertised, and say how you felt when you saw it.`);
                     } else {
                       handlePlayExaminerAudio(currentData.questions?.join('. ') || '');
                     }
                   }}
-                  className="text-[11px] font-bold text-slate-700 hover:text-emerald-800 flex items-center gap-1 bg-slate-100 hover:bg-emerald-50 px-2.5 py-1 rounded-xl transition cursor-pointer border border-slate-200"
-                  title="Giám khảo AI đọc toàn bộ câu hỏi (Giọng Anh - Anh)"
+                  className={`text-[11px] font-bold flex items-center gap-1.5 px-3 py-1 rounded-xl transition cursor-pointer border ${
+                    isSpeakingExaminer
+                      ? 'bg-indigo-600 text-white border-indigo-400 animate-pulse'
+                      : 'text-slate-700 hover:text-emerald-800 bg-slate-100 hover:bg-emerald-50 border-slate-200'
+                  }`}
+                  title={isSpeakingExaminer ? "Dừng giám khảo đọc câu hỏi" : "Giám khảo AI đọc toàn bộ câu hỏi (Giọng Anh - Anh)"}
                 >
-                  <Volume2 className="w-3.5 h-3.5 text-emerald-600" />
-                  <span>Giám khảo đọc</span>
+                  {isSpeakingExaminer ? (
+                    <>
+                      <Volume2 className="w-3.5 h-3.5 text-white animate-bounce" />
+                      <span>Giám khảo đang đọc... (Mic Tắt)</span>
+                    </>
+                  ) : (
+                    <>
+                      <Volume2 className="w-3.5 h-3.5 text-emerald-600" />
+                      <span>Giám khảo đọc</span>
+                    </>
+                  )}
                 </button>
               </div>
 
@@ -2012,72 +2617,204 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
 
             {/* Audio Recording & Speech Panel */}
             <div className="pt-4 border-t border-slate-100 space-y-4">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <label className="text-xs font-extrabold text-slate-800 flex items-center gap-1.5">
                   <Mic className="w-4 h-4 text-emerald-600" />
                   Ghi Âm Bài Nói ({selectedPart.replace('_', ' ')}):
                 </label>
-                {selectedPart === 'PART_2' && isTalkActive && (
-                  <span className="text-xs font-mono font-bold text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-lg border border-emerald-300 animate-pulse">
-                    Thời gian nói còn lại: {Math.floor(talkTimeLeft / 60)}:{(talkTimeLeft % 60).toString().padStart(2, '0')}
-                  </span>
-                )}
-              </div>
+                
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={toggleTestMic}
+                    className={`text-[11px] font-bold px-2.5 py-1 rounded-xl transition cursor-pointer flex items-center gap-1.5 border ${
+                      testMicActive 
+                        ? 'bg-emerald-600 text-white border-emerald-500 shadow-sm animate-pulse'
+                        : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-200'
+                    }`}
+                  >
+                    <Activity className="w-3.5 h-3.5" />
+                    <span>{testMicActive ? 'Đang Test Micro (Bấm để tắt)' : 'Kiểm Tra Micro'}</span>
+                  </button>
 
-              <div className="p-5 bg-slate-50 rounded-2xl border border-slate-200 text-center space-y-3">
-                <div className="flex items-center justify-center gap-4">
-                  {!isRecording ? (
-                    <button
-                      type="button"
-                      onClick={handleStartPracticeRecording}
-                      className="w-16 h-16 rounded-full bg-emerald-600 hover:bg-emerald-500 text-white flex items-center justify-center shadow-lg transition cursor-pointer hover:scale-105"
-                      title="Bắt đầu ghi âm"
-                    >
-                      <Mic className="w-7 h-7" />
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={handleStopPracticeRecording}
-                      className="w-16 h-16 rounded-full bg-rose-600 hover:bg-rose-500 text-white flex items-center justify-center shadow-lg transition cursor-pointer animate-pulse"
-                      title="Dừng ghi âm"
-                    >
-                      <Square className="w-6 h-6" />
-                    </button>
+                  {selectedPart === 'PART_2' && isTalkActive && (
+                    <span className="text-xs font-mono font-bold text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-lg border border-emerald-300 animate-pulse">
+                      Thời gian nói còn lại: {Math.floor(talkTimeLeft / 60)}:{(talkTimeLeft % 60).toString().padStart(2, '0')}
+                    </span>
                   )}
                 </div>
+              </div>
 
-                <div className="text-xs">
-                  <p className="font-extrabold text-slate-800">
-                    {isRecording ? '🔴 Đang ghi âm bài nói... Hãy nói to, rõ ràng và tự nhiên!' : 'Nhấp biểu tượng Micro để bắt đầu ghi âm'}
-                  </p>
-                  <p className="text-slate-500 text-[11px] mt-0.5">
-                    Hệ thống hỗ trợ cả thu âm giọng nói trực tiếp lẫn gõ/dán bài transcript bên dưới.
-                  </p>
+              {/* Live VU Audio Level Meter Indicator */}
+              {(isRecording || testMicActive) && (
+                <div className="p-3 bg-slate-900 text-white rounded-2xl border border-slate-800 space-y-2 animate-in fade-in">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="flex items-center gap-2 font-bold text-emerald-400">
+                      <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
+                      Tín hiệu Micro (Audio Input Level): {audioLevel}%
+                    </span>
+                    <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-md ${
+                      audioLevel > 15 ? 'bg-emerald-500/30 text-emerald-300 border border-emerald-500' : 'bg-amber-500/20 text-amber-300 border border-amber-500'
+                    }`}>
+                      {audioLevel > 15 ? 'Đã thu được âm thanh tốt 🟢' : 'Âm lượng thấp - hãy nói gần Micro hơn ⚠️'}
+                    </span>
+                  </div>
+                  {/* Visual Equalizer Bar */}
+                  <div className="w-full bg-slate-800 h-2.5 rounded-full overflow-hidden flex">
+                    <div 
+                      className={`h-full transition-all duration-75 rounded-full ${
+                        audioLevel > 60 
+                          ? 'bg-gradient-to-r from-emerald-500 via-teal-400 to-rose-500' 
+                          : audioLevel > 20 
+                          ? 'bg-gradient-to-r from-emerald-500 to-teal-400' 
+                          : 'bg-slate-600'
+                      }`}
+                      style={{ width: `${Math.max(5, audioLevel)}%` }}
+                    />
+                  </div>
                 </div>
+              )}
 
-                {currentAudioUrl && (
-                  <div className="pt-2 space-y-2">
-                    <div className="flex items-center justify-between bg-emerald-50 border border-emerald-300 px-3 py-1.5 rounded-xl text-[11px] text-emerald-900 font-bold">
-                      <span className="flex items-center gap-1.5">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                        Đã ghi âm thành công! Sẵn sàng chấm điểm.
-                      </span>
+              {/* Recording Box */}
+              {isGrading ? (
+                <div className="p-6 bg-gradient-to-r from-emerald-50 to-teal-50 rounded-2xl border-2 border-emerald-300 text-center space-y-3 shadow-sm animate-pulse">
+                  <div className="w-12 h-12 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center mx-auto">
+                    <Loader2 className="w-6 h-6 animate-spin text-emerald-600" />
+                  </div>
+                  <div className="space-y-1">
+                    <h4 className="text-sm font-extrabold text-emerald-950">
+                      Giám Khảo AI Đang Chấm Điểm & Phân Tích Bài Nói...
+                    </h4>
+                    <p className="text-xs text-emerald-800">
+                      Đang phân tích 4 tiêu chí IELTS chính thức: Fluency, Lexical Resource, Grammar và Pronunciation. Kết quả sẽ hiện ngay lập tức!
+                    </p>
+                  </div>
+                </div>
+              ) : gradingResult ? (
+                <div className="p-5 bg-emerald-50/80 rounded-2xl border-2 border-emerald-300 text-center space-y-3.5 shadow-sm">
+                  <div className="flex items-center justify-center gap-2 text-emerald-900 font-black text-sm">
+                    <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+                    <span>Đã chấm xong! Điểm số và nhận xét chi tiết đã hiển thị bên cạnh</span>
+                  </div>
+
+                  {currentAudioUrl && (
+                    <div className="pt-1">
+                      <audio controls src={currentAudioUrl} className="w-full max-w-md mx-auto h-9" />
+                    </div>
+                  )}
+
+                  <div className="flex flex-wrap items-center justify-center gap-3 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setGradingResult(null);
+                        setPartAudioUrls(prev => ({ ...prev, [selectedPart]: null }));
+                        setPartAudioBlobs(prev => ({ ...prev, [selectedPart]: null }));
+                      }}
+                      className="px-4 py-2 rounded-xl bg-white hover:bg-emerald-100 text-emerald-800 border border-emerald-300 text-xs font-bold transition cursor-pointer shadow-2xs flex items-center gap-1.5"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>Thu âm / Nói lại bài này</span>
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="p-5 bg-slate-50 rounded-2xl border border-slate-200 text-center space-y-4">
+                  <div className="flex flex-wrap items-center justify-center gap-4">
+                    {!isRecording ? (
                       <button
                         type="button"
-                        onClick={() => {
-                          setPartAudioUrls(prev => ({ ...prev, [selectedPart]: null }));
-                        }}
-                        className="text-[10px] text-rose-600 hover:text-rose-800 underline cursor-pointer font-bold"
-                        title="Xóa bản thu để thu âm lại hoặc chuyển sang nhập văn bản thủ công"
+                        onClick={handleStartPracticeRecording}
+                        className="w-16 h-16 rounded-full bg-emerald-600 hover:bg-emerald-500 text-white flex items-center justify-center shadow-lg transition cursor-pointer hover:scale-105"
+                        title="Bắt đầu ghi âm"
                       >
-                        Xóa bản thu âm
+                        <Mic className="w-7 h-7" />
                       </button>
-                    </div>
-                    <audio controls src={currentAudioUrl} className="w-full max-w-md mx-auto h-9" />
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={handleStopPracticeRecording}
+                        className="w-16 h-16 rounded-full bg-rose-600 hover:bg-rose-500 text-white flex items-center justify-center shadow-lg transition cursor-pointer animate-pulse"
+                        title="Dừng ghi âm và Chấm điểm ngay"
+                      >
+                        <Square className="w-6 h-6" />
+                      </button>
+                    )}
                   </div>
-                )}
-              </div>
+
+                  <div className="text-xs">
+                    <p className="font-extrabold text-slate-800">
+                      {isRecording ? '🔴 Đang thu âm giọng nói... Bấm nút Dừng để chấm điểm ngay lập tức!' : 'Nhấp biểu tượng Micro để bắt đầu thu âm hoặc Tải file Audio lên'}
+                    </p>
+                    <p className="text-slate-500 text-[11px] mt-0.5">
+                      Hệ thống tự động chấm điểm và hiển thị kết quả Band ngay khi bạn kết thúc bài nói.
+                    </p>
+                  </div>
+
+                  {/* Audio Upload Option */}
+                  <div className="flex flex-wrap items-center justify-center gap-3 pt-1">
+                    <label className="text-xs font-bold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 px-3.5 py-1.5 rounded-xl border border-emerald-200 transition cursor-pointer flex items-center gap-1.5 shadow-2xs">
+                      <Upload className="w-3.5 h-3.5 text-emerald-600" />
+                      <span>Tải file ghi âm có sẵn (.mp3, .wav, .m4a, .webm)</span>
+                      <input 
+                        type="file" 
+                        accept="audio/*,.mp3,.wav,.m4a,.webm,.ogg" 
+                        onChange={handleUploadAudioFile} 
+                        className="hidden" 
+                      />
+                    </label>
+                  </div>
+
+                  {/* Status or Transcription in Progress Banner */}
+                  {(isTranscribing || transcriptionStatus) && (
+                    <div className={`p-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 ${
+                      isTranscribing ? 'bg-amber-50 border-amber-300 text-amber-900 animate-pulse' : 'bg-emerald-50 border-emerald-300 text-emerald-900'
+                    }`}>
+                      {isTranscribing ? (
+                        <Loader2 className="w-4 h-4 animate-spin text-amber-600" />
+                      ) : (
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                      )}
+                      <span>{transcriptionStatus || 'Đang trích xuất giọng nói bằng Gemini Audio AI...'}</span>
+                    </div>
+                  )}
+
+                  {currentAudioUrl && (
+                    <div className="pt-2 space-y-2">
+                      <div className="flex flex-wrap items-center justify-between bg-emerald-50 border border-emerald-300 px-3 py-1.5 rounded-xl text-[11px] text-emerald-900 font-bold gap-2">
+                        <span className="flex items-center gap-1.5">
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                          Đã có file ghi âm! Bạn có thể nghe lại bên dưới.
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={handleManualTranscribe}
+                            disabled={isTranscribing}
+                            className="text-[10px] bg-white hover:bg-emerald-100 text-emerald-800 px-2.5 py-1 rounded-lg border border-emerald-300 cursor-pointer font-bold flex items-center gap-1 shadow-2xs disabled:opacity-50"
+                            title="Trích xuất lại nội dung từ file ghi âm này bằng Gemini AI"
+                          >
+                            <Sparkles className="w-3 h-3 text-emerald-600" />
+                            <span>{isTranscribing ? 'Đang trích xuất...' : 'AI Trích xuất lại'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPartAudioUrls(prev => ({ ...prev, [selectedPart]: null }));
+                              setPartAudioBlobs(prev => ({ ...prev, [selectedPart]: null }));
+                            }}
+                            className="text-[10px] text-rose-600 hover:text-rose-800 underline cursor-pointer font-bold"
+                            title="Xóa bản thu để thu âm lại hoặc chuyển sang nhập văn bản thủ công"
+                          >
+                            Xóa bản thu âm
+                          </button>
+                        </div>
+                      </div>
+                      <audio controls src={currentAudioUrl} className="w-full max-w-md mx-auto h-9" />
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Transcript Input with Locked Status for Audio Recordings */}
               {(() => {
@@ -2136,7 +2873,7 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
                       className={`w-full rounded-2xl p-3.5 text-xs font-mono leading-relaxed transition shadow-inner ${
                         isTranscriptLocked
                           ? 'bg-slate-100/90 border border-slate-300 text-slate-800 cursor-not-allowed select-text focus:outline-none'
-                          : 'bg-slate-50 border border-slate-200 text-slate-800 focus:outline-none focus:border-emerald-500 placeholder:text-slate-400'
+                          : 'bg-slate-50 border border-slate-200 text-slate-800 focus:outline-none border-emerald-500 placeholder:text-slate-400'
                       }`}
                     />
                   </div>
@@ -2199,26 +2936,48 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
         </div>
 
         {/* Right 5 Columns: AI Feedback, Band Scores, Error Breakdown & Upgrades */}
-        <div className="lg:col-span-5 space-y-6">
+        <div ref={resultsRef} className="lg:col-span-5 space-y-6">
           {gradingResult ? (
             <div className="bg-white border border-slate-200/80 rounded-3xl p-6 space-y-5 shadow-sm">
               {/* Overall Band Card */}
-              <div className="p-5 rounded-2xl bg-gradient-to-br from-emerald-600 to-teal-700 text-white shadow-md space-y-1">
-                <span className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-200">
-                  Official IELTS Speaking Assessment Report
-                </span>
+              <div className="p-5 rounded-2xl bg-gradient-to-br from-emerald-600 to-teal-700 text-white shadow-md space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-200">
+                    Official IELTS Speaking Assessment Report
+                  </span>
+                  <span className="px-2.5 py-0.5 bg-white/20 backdrop-blur-xs rounded-full text-[11px] font-bold text-white">
+                    {examMode === 'SIMULATION' ? 'Full 3-Part Exam' : selectedPart.replace('_', ' ')}
+                  </span>
+                </div>
                 <div className="flex items-baseline justify-between">
                   <h2 className="text-3xl font-black">
                     Band {gradingResult.overall_band?.toFixed(1)} <span className="text-sm font-normal text-emerald-100">/ 9.0</span>
                   </h2>
-                  <span className="px-3 py-1 bg-white/20 backdrop-blur-xs rounded-full text-xs font-bold text-white">
-                    {examMode === 'SIMULATION' ? 'Full 3-Part Exam' : selectedPart.replace('_', ' ')}
+                  <span className="text-[11px] text-emerald-200 font-medium truncate max-w-[200px]" title={currentData.topic || currentData.cueCard?.topic}>
+                    {examMode === 'SIMULATION' ? 'All 3 Parts' : (currentData.topic || currentData.cueCard?.topic)}
                   </span>
                 </div>
                 <p className="text-xs text-emerald-100 leading-relaxed pt-1 font-medium">
                   {gradingResult.general_feedback}
                 </p>
               </div>
+
+              {/* Verified Submitted Transcript Info Box */}
+              <details className="bg-slate-50 border border-slate-200 rounded-2xl p-3.5 text-xs group cursor-pointer">
+                <summary className="font-extrabold text-slate-700 flex items-center justify-between select-none">
+                  <span className="flex items-center gap-1.5 text-emerald-800">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                    <span>Nội dung bài nói đã gửi chấm điểm ({examMode === 'SIMULATION' ? 'Toàn bộ 3 Part' : selectedPart.replace('_', ' ')})</span>
+                  </span>
+                  <span className="text-[10px] text-slate-400 group-open:rotate-180 transition-transform">▼</span>
+                </summary>
+                <div className="mt-2.5 pt-2 border-t border-slate-200/80 font-mono text-[11px] text-slate-700 whitespace-pre-wrap leading-relaxed max-h-48 overflow-y-auto bg-white p-3 rounded-xl border border-slate-100">
+                  {examMode === 'SIMULATION' 
+                    ? `[Part 1]: ${partTranscripts.PART_1 || '(Không có)'}\n\n[Part 2]: ${partTranscripts.PART_2 || '(Không có)'}\n\n[Part 3]: ${partTranscripts.PART_3 || '(Không có)'}`
+                    : (partTranscripts[selectedPart] || '(Chưa có transcript lưu lại)')
+                  }
+                </div>
+              </details>
 
               {/* 4 Official Criteria Breakdown */}
               <div className="space-y-2.5">
@@ -2280,26 +3039,96 @@ export const SpeakingGraderView: React.FC<SpeakingGraderViewProps> = ({
 
               {/* Advanced Suggestions & Upgrades */}
               {gradingResult.suggestions && gradingResult.suggestions.length > 0 && (
-                <div className="space-y-2.5 pt-2 border-t border-slate-100">
-                  <h3 className="text-xs font-extrabold text-emerald-700 uppercase tracking-wider flex items-center gap-1.5">
-                    <Sparkles className="w-4 h-4 text-emerald-600" />
-                    Nâng Cấp Câu Lên Band 8.5 - 9.0 (Upgrades):
-                  </h3>
-                  <div className="space-y-2">
-                    {gradingResult.suggestions.map((sug: any, idx: number) => (
-                      <div key={idx} className="p-3 bg-emerald-50/80 border border-emerald-300 rounded-xl text-xs space-y-1">
-                        <div className="flex items-center justify-between text-[10px] font-bold text-emerald-900">
-                          <span>Mục tiêu Band {sug.target_band || '8.5+'}</span>
+                <div className="space-y-3 pt-3 border-t border-slate-100">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-xs font-extrabold text-emerald-800 uppercase tracking-wider flex items-center gap-1.5">
+                      <Sparkles className="w-4 h-4 text-emerald-600 animate-pulse" />
+                      Nâng Cấp Câu Lên Band 8.5 - 9.0 (Upgrades):
+                    </h3>
+                    <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100/80 px-2 py-0.5 rounded-full">
+                      Dựa trên câu nói thực tế của bạn
+                    </span>
+                  </div>
+
+                  <div className="space-y-3">
+                    {gradingResult.suggestions.map((sug: any, idx: number) => {
+                      const isPlaying = playingUpgradeIdx === idx;
+                      const isCopied = copiedUpgradeIdx === idx;
+                      return (
+                        <div 
+                          key={idx} 
+                          className="p-3.5 bg-gradient-to-br from-emerald-50/90 via-teal-50/60 to-white border border-emerald-300/80 rounded-2xl text-xs space-y-2.5 shadow-sm hover:shadow-md transition-shadow"
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-600 text-white font-extrabold text-[10px] tracking-wide shadow-xs">
+                              <Award className="w-3 h-3" />
+                              Mục tiêu Band {sug.target_band ? (sug.target_band >= 9 ? '9.0' : '8.5 - 9.0') : '8.5+'}
+                            </span>
+                            {sug.lexical_focus && (
+                              <span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md">
+                                {sug.lexical_focus}
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Original Student Sentence */}
+                          <div className="p-2.5 rounded-xl bg-white/90 border border-slate-200/80">
+                            <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">
+                              Câu gốc của bạn:
+                            </p>
+                            <p className="text-slate-800 font-medium italic text-xs leading-relaxed">
+                              "{sug.original_phrase}"
+                            </p>
+                          </div>
+
+                          {/* Upgraded Band 8.5 - 9.0 Sentence */}
+                          <div className="p-3 rounded-xl bg-emerald-900 text-white shadow-inner space-y-1.5">
+                            <div className="flex items-center justify-between">
+                              <p className="text-[11px] font-extrabold text-emerald-300 flex items-center gap-1 uppercase tracking-wider">
+                                <Sparkles className="w-3 h-3" /> Phiên bản nâng cấp Band 8.5 - 9.0:
+                              </p>
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => handlePlayUpgradeAudio(sug.suggested_phrase, idx)}
+                                  className={`px-2 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 transition cursor-pointer ${
+                                    isPlaying 
+                                      ? 'bg-amber-400 text-slate-950 animate-pulse' 
+                                      : 'bg-emerald-800 hover:bg-emerald-700 text-emerald-100'
+                                  }`}
+                                  title="Nghe phát âm chuẩn bản ngữ"
+                                >
+                                  <Volume2 className="w-3 h-3" />
+                                  {isPlaying ? 'Đang phát...' : 'Nghe mẫu'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleCopyUpgradeText(sug.suggested_phrase, idx)}
+                                  className={`px-2 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 transition cursor-pointer ${
+                                    isCopied 
+                                      ? 'bg-emerald-500 text-white' 
+                                      : 'bg-emerald-800 hover:bg-emerald-700 text-emerald-100'
+                                  }`}
+                                  title="Sao chép câu nâng cấp"
+                                >
+                                  {isCopied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                                  {isCopied ? 'Đã chép' : 'Sao chép'}
+                                </button>
+                              </div>
+                            </div>
+                            <p className="text-emerald-100 font-semibold text-xs leading-relaxed">
+                              "{sug.suggested_phrase}"
+                            </p>
+                          </div>
+
+                          {/* Pedagogical Explanation */}
+                          <div className="p-2 bg-emerald-100/60 rounded-lg text-[11px] text-emerald-950 leading-relaxed">
+                            <span className="font-bold">💡 Điểm nâng cấp: </span>
+                            {sug.reason}
+                          </div>
                         </div>
-                        <p className="text-slate-800 font-medium">
-                          Câu gốc: <span className="text-slate-600 italic">"{sug.original_phrase}"</span>
-                        </p>
-                        <p className="text-emerald-950 font-bold">
-                          ➔ Nâng cấp: "{sug.suggested_phrase}"
-                        </p>
-                        <p className="text-slate-600 text-[11px]">{sug.reason}</p>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}

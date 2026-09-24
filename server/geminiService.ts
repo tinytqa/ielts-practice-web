@@ -1,4 +1,6 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
+import { analyzeIELTSWritingComprehensive } from "./writingAnalyzer";
+import { analyzeIELTSSpeakingComprehensive } from "./speakingAnalyzer";
 
 const apiKey = process.env.GEMINI_API_KEY || '';
 
@@ -10,6 +12,16 @@ const ai = new GoogleGenAI({
     }
   }
 });
+
+function normalizeAudioMimeType(mime: string = ''): string {
+  const base = mime.split(';')[0].trim().toLowerCase();
+  if (base === 'audio/mp3' || base === 'audio/mpeg') return 'audio/mp3';
+  if (base === 'audio/wav' || base === 'audio/x-wav') return 'audio/wav';
+  if (base === 'audio/ogg' || base === 'audio/opus') return 'audio/ogg';
+  if (base === 'audio/aac') return 'audio/aac';
+  if (base === 'audio/m4a' || base === 'audio/x-m4a' || base === 'audio/mp4') return 'audio/mp4';
+  return 'audio/webm';
+}
 
 // Helper for generating standard empty evaluation result
 function getEmptyEssayResult(taskType: 'TASK_1' | 'TASK_2', wordCount: number) {
@@ -224,7 +236,34 @@ TASK 2 CRITICAL EVALUATION RULES:
 `}
 
 You MUST respond strictly in valid JSON matching the schema.
-Provide all comments, reasons, and explanations in clear, encouraging Vietnamese (Tiếng Việt), while keeping English terms/phrases intact.
+Provide all comments, reasons, and explanations in clear, pedagogical Vietnamese (Tiếng Việt), while keeping English terms/phrases intact.
+
+CRITICAL FOCUS ON GRAMMAR & ACCURACY (GRA):
+- Conduct an exhaustive Grammatical & Syntactic audit. Do NOT merely focus on vocabulary or generic praise.
+- Identify EVERY grammatical flaw, including:
+  1. Subject-Verb Agreement (e.g. "The number of students have" -> "has", "Every people" -> "Everyone")
+  2. Tense Inconsistencies & Irregular Verb Forms (e.g. "did not went" -> "did not go", "have wrote" -> "have written")
+  3. Clause Structure & Double Conjunctions (e.g. "Although ... but", "Because ... so", "In spite of + clause")
+  4. Verb Complements & Gerund vs Infinitive (e.g. "suggest sb to do" -> "suggest that sb do", "by do" -> "by doing", "avoid to do" -> "avoid doing", "spend time to study" -> "spend time studying")
+  5. Intransitive Verbs in Passive Voice (e.g. "was happened", "was disappeared", "is consisted of")
+  6. Countable vs Uncountable Nouns & Articles (e.g. "many informations", "this people", "each students")
+  7. Preposition Errors & Collocations (e.g. "focus at" -> "focus on", "depend of" -> "depend on")
+  8. Relative Clauses & Pronoun Redundancy (e.g. "which it", "who he", "in where")
+- Tag every error with a precise error code:
+  * "grammar_agreement": Lỗi hòa hợp chủ ngữ - vị ngữ
+  * "grammar_tense": Lỗi thì động từ & phân từ
+  * "grammar_verb_form": Lỗi dạng động từ (V-ing / to-V / bare V)
+  * "grammar_clause": Lỗi liên từ, mệnh đề quan hệ & cấu trúc câu
+  * "grammar_passive": Lỗi thể bị động & nội động từ
+  * "grammar_preposition": Lỗi giới từ
+  * "grammar_article_noun": Lỗi mạo từ, danh từ đếm được/không đếm được
+  * "grammar_word_form": Lỗi loại từ (Noun/Adj/Adv/Verb)
+  * "grammar_modal": Lỗi động từ khuyết thiếu
+  * "spelling_typo": Lỗi chính tả
+  * "punctuation_comma": Lỗi dấu câu
+  * "lexical_collocation": Lỗi kết hợp từ
+  * "style_contraction": Lỗi viết tắt
+- In "explanation": Explain clearly the specific GRAMMAR RULE (Quy tắc ngữ pháp), why the candidate's structure is wrong, and provide the correct rule explanation in Vietnamese.
 
 Special Grading Tasks:
 1. "errors": Highlight and extract ALL grammar, vocabulary, spelling, preposition, punctuation, or word-form errors. The "original_text" MUST EXACTLY MATCH a snippet/phrase in the Candidate Essay so it can be highlighted in the UI. Provide "corrected_text" and "explanation" (explain clearly why it is wrong and the rule behind it in Vietnamese).
@@ -253,12 +292,12 @@ ${trimmed}
 """
 Target Band Goal: ${targetBand}
 
-Evaluate this response with strict IELTS standards. Detect all errors for UI highlight, perform sentence upgrades with detailed reason breakdowns, and rewrite into a Band 8.0 essay with paragraph-by-paragraph transformation explanations.
+Evaluate this response with strict IELTS standards. Detect all errors for UI highlight (focus heavily on grammar rules, subject-verb agreement, tenses, verb forms, and sentence structure), perform sentence upgrades with detailed reason breakdowns, and rewrite into a Band 8.0 essay with paragraph-by-paragraph transformation explanations.
 `;
 
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3.6-flash",
+      model: "gemini-3.7-flash",
       contents: prompt,
       config: {
         systemInstruction,
@@ -365,47 +404,42 @@ Evaluate this response with strict IELTS standards. Detect all errors for UI hig
 
     const jsonText = response.text || "{}";
     const parsed = JSON.parse(jsonText);
-    return parsed;
-  } catch (error) {
-    console.error("Gemini Writing Grading Error:", error);
-    // Calculated score based on word count if API fails
-    const estimatedBand = wordCount < 50 ? 2.5 : wordCount < 100 ? 4.0 : wordCount < 140 ? 5.0 : 6.0;
-    return {
-      overall_band: estimatedBand,
-      criteria: [
-        { 
-          name: taskType === 'TASK_1' ? "Task Achievement" : "Task Response", 
-          score: estimatedBand, 
-          comment: isTask1 
-            ? `Bài viết đạt ${wordCount} từ. Đã miêu tả được một số đặc điểm trên bản đồ nhưng cần kiểm tra đoạn Overview và bổ sung thêm các so sánh tương quan giữa năm 2004 và 2014.`
-            : `Bài viết đạt ${wordCount} từ. Đã đưa ra được ý kiến nhưng cần phát triển sâu hơn các luận cứ và ví dụ minh họa.`
-        },
-        { 
-          name: "Coherence and Cohesion", 
-          score: estimatedBand, 
-          comment: "Bố cục các đoạn văn tương đối rõ ràng. Hãy sử dụng linh hoạt các liên từ chuyển tiếp (In contrast, Furthermore, Meanwhile)." 
-        },
-        { 
-          name: "Lexical Resource", 
-          score: estimatedBand, 
-          comment: "Có sử dụng từ vựng phù hợp với đề bài. Cần tránh lặp từ và sử dụng thêm các cụm collocations học thuật." 
-        },
-        { 
-          name: "Grammatical Range and Accuracy", 
-          score: estimatedBand, 
-          comment: "Sử dụng kết hợp câu đơn và câu phức. Cần chú ý chia đúng thì Quá khứ đơn cho các dữ kiện trong quá khứ." 
+
+    // Merge comprehensive rule-based grammatical checks with AI-graded errors to guarantee all grammar mistakes are caught
+    const ruleBased = analyzeIELTSWritingComprehensive(taskType, promptTitle, trimmed, targetBand);
+    const combinedErrors = Array.isArray(parsed.errors) ? [...parsed.errors] : [];
+    const existingOriginals = new Set(combinedErrors.map((e: any) => (e.original_text || '').toLowerCase().trim()));
+
+    if (ruleBased.errors && Array.isArray(ruleBased.errors)) {
+      for (const rErr of ruleBased.errors) {
+        const rOrig = (rErr.original_text || '').toLowerCase().trim();
+        if (rOrig && !existingOriginals.has(rOrig)) {
+          combinedErrors.push(rErr);
+          existingOriginals.add(rOrig);
         }
-      ],
-      general_feedback: `Đánh giá sơ bộ dựa trên bài viết ${wordCount} từ. Để đạt band 7.0+, hãy đảm bảo bài viết có đoạn Overview rõ ràng, chia 4 đoạn chuẩn mực và hạn chế lỗi ngữ pháp thì động từ.`,
-      errors: [
-        { error_tag_code: "grammar_tense", original_text: "In 2014, trees are relocated.", corrected_text: "In 2014, trees were relocated.", explanation: "Dữ liệu năm 2014 thuộc quá khứ, cần dùng thì Quá khứ đơn bị động 'were relocated'." }
-      ],
-      suggestions: [
-        { original_phrase: "build new things", suggested_phrase: "underwent significant archaeological excavation", target_band: 8.0, reason: "Từ vựng miêu tả sự thay đổi khảo cổ mang tính học thuật cao hơn." }
-      ],
-      sample_comparison: "So sánh với bài mẫu Band 8.0: Hãy đảm bảo có đoạn Overview bao quát 3 thay đổi lớn nhất (cơ sở mới, khu nhà mở rộng, cây di dời) trước khi đi vào từng thân bài chi tiết."
-    };
+      }
+    }
+    parsed.errors = combinedErrors;
+
+    return parsed;
+  } catch (error: any) {
+    const isQuota = error?.message?.includes('429') || error?.status === 429 || error?.message?.includes('RESOURCE_EXHAUSTED') || error?.message?.includes('prepayment');
+    if (isQuota) {
+      console.warn("Gemini Writing Grading quota exhausted (429). Using Deep Linguistic Rule Engine for offline scoring.");
+    } else {
+      console.warn("Gemini Writing Grading notice, falling back to Deep Linguistic Rule Engine:", error?.message || error);
+    }
+    return analyzeIELTSWritingComprehensive(taskType, promptTitle, trimmed, targetBand);
   }
+}
+
+export function analyzeIELTSWritingDeeply(
+  taskType: 'TASK_1' | 'TASK_2',
+  promptTitle: string,
+  essayText: string,
+  targetBand: number = 7.0
+) {
+  return analyzeIELTSWritingComprehensive(taskType, promptTitle, essayText, targetBand);
 }
 
 export async function gradeFullWritingExam(
@@ -470,10 +504,28 @@ export async function gradeSpeakingResponse(
   part: string,
   promptTitle: string,
   transcript: string,
-  audioBase64?: string
+  audioBase64?: string,
+  audioMimeType: string = 'audio/webm'
 ) {
+  let speakingTranscript = (transcript || '').trim();
+
+  // If transcript is empty but audioBase64 exists, transcribe it first
+  if (!speakingTranscript && audioBase64) {
+    try {
+      const autoTrans = await transcribeSpeakingAudio(audioBase64, audioMimeType, promptTitle);
+      if (autoTrans.transcript) {
+        speakingTranscript = autoTrans.transcript.trim();
+      }
+    } catch (e) {
+      console.warn("Pre-grading STT failed:", e);
+    }
+  }
+
+  const isFullExam = part === 'FULL_EXAM' || part === 'ALL' || promptTitle.toLowerCase().includes('full');
+  const examScopeLabel = isFullExam ? 'Full 3-Part Academic Speaking Examination' : `IELTS Speaking (${part})`;
+
   const systemInstruction = `
-You are an expert official IELTS Senior Examiner evaluating IELTS Speaking (${part}).
+You are an expert official IELTS Senior Examiner evaluating ${examScopeLabel}.
 You MUST strictly evaluate the candidate's performance according to the official IELTS SPEAKING BAND DESCRIPTORS (PUBLIC VERSION jointly owned by British Council, IDP: IELTS Australia and Cambridge English Language Assessment).
 
 ================================================================================
@@ -481,149 +533,88 @@ OFFICIAL IELTS SPEAKING BAND DESCRIPTORS (PUBLIC VERSION) MATRIX:
 ================================================================================
 
 --- CRITERIA 1: FLUENCY AND COHERENCE (FC) ---
-- Band 9:
-  * speaks fluently with only rare repetition or self-correction
-  * any hesitation is content-related rather than to find words or grammar
-  * speaks coherently with fully appropriate cohesive features
-  * develops topics fully and appropriately
-- Band 8:
-  * speaks fluently with only occasional repetition or self-correction; hesitation is usually content-related and only rarely to search for language
-  * develops topics coherently and appropriately
-- Band 7:
-  * speaks at length without noticeable effort or loss of coherence
-  * may demonstrate language-related hesitation at times, or some repetition and/or self-correction
-  * uses a range of connectives and discourse markers with some flexibility
-- Band 6:
-  * is willing to speak at length, though may lose coherence at times due to occasional repetition, self-correction or hesitation
-  * uses a range of connectives and discourse markers but not always appropriately
-- Band 5:
-  * usually maintains flow of speech but uses repetition, self-correction and/or slow speech to keep going
-  * may over-use certain connectives and discourse markers
-  * produces simple speech fluently, but more complex communication causes fluency problems
-- Band 4:
-  * cannot respond without noticeable pauses and may speak slowly, with frequent repetition and self-correction
-  * links basic sentences but with repetitious use of simple connectives and some breakdowns in coherence
-- Band 3:
-  * speaks with long pauses
-  * has limited ability to link simple sentences
-  * gives only simple responses and is frequently unable to convey basic message
-- Band 2:
-  * pauses lengthily before most words
-  * little communication possible
-- Band 1:
-  * no communication possible; no rateable language
-- Band 0:
-  * does not attend
+- Band 9: speaks fluently with only rare repetition or self-correction; hesitation is content-related; speaks coherently with fully appropriate cohesive features; develops topics fully.
+- Band 8: speaks fluently with only occasional repetition/self-correction; hesitation usually content-related; develops topics coherently.
+- Band 7: speaks at length without noticeable effort or loss of coherence; occasional language hesitation/repetition; uses a range of connectives/discourse markers.
+- Band 6: willing to speak at length; may lose coherence at times due to repetition/hesitation; uses connectives with mixed appropriateness.
+- Band 5: usually maintains flow of speech; uses repetition/self-correction to keep going; produces simple speech fluently but complex communication causes problems.
+- Band 4: cannot respond without noticeable pauses; links basic sentences with repetitious connectives.
+- Band 1-3: extremely limited communication, long pauses, isolated words.
 
 --- CRITERIA 2: LEXICAL RESOURCE (LR) ---
-- Band 9:
-  * uses vocabulary with full flexibility and precision in all topics
-  * uses idiomatic language naturally and accurately
-- Band 8:
-  * uses a wide vocabulary resource readily and flexibly to convey precise meaning
-  * uses less common and idiomatic vocabulary skilfully, with occasional inaccuracies
-  * uses paraphrase effectively as required
-- Band 7:
-  * uses vocabulary resource flexibly to discuss a variety of topics
-  * uses some less common and idiomatic vocabulary and shows some awareness of style and collocation, with some inappropriate choices
-  * uses paraphrase effectively
-- Band 6:
-  * has a wide enough vocabulary to discuss topics at length and make meaning clear in spite of inappropriacies
-  * generally paraphrases successfully
-- Band 5:
-  * manages to talk about familiar and unfamiliar topics but uses vocabulary with limited flexibility
-  * attempts to use paraphrase but with mixed success
-- Band 4:
-  * is able to talk about familiar topics but can only convey basic meaning on unfamiliar topics and makes frequent errors in word choice
-  * rarely attempts paraphrase
-- Band 3:
-  * uses simple vocabulary to convey personal information
-  * has insufficient vocabulary for less familiar topics
-- Band 2:
-  * only produces isolated words or memorised utterances
-- Band 1:
-  * no rateable language
+- Band 9: full flexibility and precision in all topics; uses idiomatic language naturally and accurately.
+- Band 8: wide vocabulary resource readily and flexibly; uses less common and idiomatic vocabulary skilfully with occasional inaccuracies; effective paraphrase.
+- Band 7: vocabulary resource used flexibly; uses less common and idiomatic vocabulary with awareness of style/collocation; good paraphrase.
+- Band 6: adequate vocabulary to discuss topics at length; generally paraphrases successfully.
+- Band 5: manages familiar topics with limited flexibility; basic paraphrase attempts.
+- Band 4: basic meaning on familiar topics; frequent errors in word choice.
+- Band 1-3: insufficient vocabulary for unfamiliar topics; isolated words.
 
 --- CRITERIA 3: GRAMMATICAL RANGE AND ACCURACY (GRA) ---
-- Band 9:
-  * uses a full range of structures naturally and appropriately
-  * produces consistently accurate structures apart from 'slips' characteristic of native speaker speech
-- Band 8:
-  * uses a wide range of structures flexibly
-  * produces a majority of error-free sentences with only very occasional inappropriacies or basic/non-systematic errors
-- Band 7:
-  * uses a range of complex structures with some flexibility
-  * frequently produces error-free sentences, though some grammatical mistakes persist
-- Band 6:
-  * uses a mix of simple and complex structures, but with limited flexibility
-  * may make frequent mistakes with complex structures though these rarely cause comprehension problems
-- Band 5:
-  * produces basic sentence forms with reasonable accuracy
-  * uses a limited range of more complex structures, but these usually contain errors and may cause some comprehension problems
-- Band 4:
-  * produces basic sentence forms and some correct simple sentences but subordinate structures are rare
-  * errors are frequent and may lead to misunderstanding
-- Band 3:
-  * attempts basic sentence forms but with limited success, or relies on apparently memorised utterances
-  * makes numerous errors except in memorised expressions
-- Band 2:
-  * cannot produce basic sentence forms
-- Band 1:
-  * cannot produce sentence forms at all
+- Band 9: full range of structures naturally and appropriately; consistently accurate structures apart from native-like 'slips'.
+- Band 8: wide range of structures flexibly; majority of error-free sentences.
+- Band 7: range of complex structures with flexibility; frequently produces error-free sentences.
+- Band 6: mix of simple and complex structures with limited flexibility; occasional mistakes with complex structures.
+- Band 5: basic sentence forms with reasonable accuracy; limited complex structures with frequent errors.
+- Band 4: basic sentence forms, subordinate structures rare, frequent errors.
+- Band 1-3: cannot produce basic sentence forms, relies on memorized fragments.
 
 --- CRITERIA 4: PRONUNCIATION (PR) ---
-- Band 9:
-  * uses a full range of pronunciation features with precision and subtlety
-  * sustains flexible use of features throughout
-  * is effortless to understand
-- Band 8:
-  * uses a wide range of pronunciation features
-  * sustains flexible use of features, with only occasional lapses
-  * is easy to understand throughout; L1 accent has minimal effect on intelligibility
-- Band 7:
-  * shows all the positive features of Band 6 and some, but not all, of the positive features of Band 8
-- Band 6:
-  * uses a range of pronunciation features with mixed control
-  * shows some effective use of features but this is not sustained
-  * can generally be understood throughout, though mispronunciation of individual words or sounds reduces clarity at times
-- Band 5:
-  * shows all the positive features of Band 4 and some, but not all, of the positive features of Band 6
-- Band 4:
-  * uses a limited range of pronunciation features
-  * attempts to control features but lapses are frequent
-  * mispronunciations are frequent and cause some difficulty for the listener
-- Band 3:
-  * shows some of the features of Band 2 and some, but not all, of the positive features of Band 4
-- Band 2:
-  * speech is often unintelligible
-- Band 1:
-  * no rateable language
+- Band 9: full range of pronunciation features with precision and subtlety; effortless to understand.
+- Band 8: wide range of pronunciation features with only occasional lapses; easy to understand throughout.
+- Band 7: shows positive features of Band 6 and some of Band 8.
+- Band 6: range of pronunciation features with mixed control; generally understood.
+- Band 5: shows positive features of Band 4 and some of Band 6.
+- Band 4: limited range of pronunciation features; frequent mispronunciations cause difficulty.
+- Band 1-3: unintelligible speech, frequent breakdowns.
 
 ================================================================================
-GRADING & SCORING RULES:
+CRITICAL EVALUATION MANDATES:
 ================================================================================
-1. Score each of the 4 criteria (FC, LR, GRA, PR) on a scale from 1.0 to 9.0 (whole or half bands: e.g. 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0).
-2. The "overall_band" MUST be the exact arithmetic average of the 4 criteria, rounded to the nearest half band (e.g. (6.5 + 6.0 + 7.0 + 6.5) / 4 = 6.5).
-3. Under each criterion, provide detailed analysis citing why the candidate met that specific Band Descriptor level in clear Vietnamese.
-4. Highlight errors in grammar/vocabulary/pronunciation in "errors".
-5. Provide 2-4 concrete phrase upgrades to Band 8.0+ in "suggestions".
+1. STRICT TOPIC ADHERENCE: You MUST evaluate ONLY the candidate's exact words for the specific exam topic: "${promptTitle}". NEVER hallucinate, invent, or substitute unrelated topics or phrases (such as travel or random sentences) that the candidate did NOT speak.
+2. If the candidate spoke in Vietnamese, note that in Lexical Resource / Fluency and score accordingly, while providing English equivalents.
+3. Score each of the 4 criteria (FC, LR, GRA, PR) on a scale from 1.0 to 9.0 (whole or half bands: e.g. 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0).
+4. The "overall_band" MUST be the exact arithmetic average of the 4 criteria, rounded to the nearest half band.
+5. In "errors", the "original_text" MUST be an EXACT quote from the candidate's transcript, and "corrected_text" must show the corrected form in clear context.
+6. In "suggestions", the "original_phrase" MUST be an actual phrase spoken by the candidate in their transcript, and "suggested_phrase" should upgrade it to C1/C2 (Band 8.5+).
+7. Under each criterion, provide detailed analysis citing why the candidate met that specific Band Descriptor level in clear Vietnamese.
 `;
 
-  const prompt = `
-Speaking Part: ${part}
-Prompt / Cue Card: "${promptTitle}"
-Candidate Transcript: "${transcript}"
-${audioBase64 ? '(Audio provided for pronunciation analysis)' : ''}
+  const promptText = `
+IELTS Exam Part: ${part}
+Exam Topic & Questions: "${promptTitle}"
+Candidate Actual Spoken Transcript:
+"""
+${speakingTranscript || '(No spoken words detected in recording)'}
+"""
 
-Evaluate this speaking performance thoroughly.
+Please perform a thorough, realistic, and objective IELTS Speaking assessment on the above transcript. All feedback, errors, and suggestions MUST reference this specific topic and the candidate's actual words.
 `;
 
+  const cleanMime = normalizeAudioMimeType(audioMimeType);
+
+  // Attempt 1: Call Gemini 3.7 Flash
   try {
+    const contentsPayload: any = (audioBase64 && speakingTranscript.length < 50)
+      ? {
+          parts: [
+            {
+              inlineData: {
+                mimeType: cleanMime,
+                data: audioBase64
+              }
+            },
+            { text: promptText }
+          ]
+        }
+      : promptText;
+
     const response = await ai.models.generateContent({
-      model: "gemini-3.6-flash",
-      contents: prompt,
+      model: "gemini-3.7-flash",
+      contents: contentsPayload,
       config: {
         systemInstruction,
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
@@ -675,25 +666,296 @@ Evaluate this speaking performance thoroughly.
     });
 
     const jsonText = response.text || "{}";
-    return JSON.parse(jsonText);
-  } catch (error) {
-    console.error("Gemini Speaking Grading Error:", error);
+    const parsed = JSON.parse(jsonText);
+    if (parsed.overall_band && parsed.criteria) {
+      // Enrich with authentic transcript-based upgrades from linguistic engine
+      const linguisticAnalysis = analyzeIELTSSpeakingComprehensive(part, promptTitle, speakingTranscript, 7.5);
+      
+      // Clean and validate suggestions to ensure they strictly reflect real student utterances
+      const validSuggestions: any[] = [];
+      const cleanTranscriptLower = speakingTranscript.toLowerCase();
+
+      if (Array.isArray(parsed.suggestions)) {
+        for (const sug of parsed.suggestions) {
+          const orig = (sug.original_phrase || '').trim();
+          if (orig && orig.length >= 3 && !orig.startsWith('[') && cleanTranscriptLower.includes(orig.toLowerCase())) {
+            validSuggestions.push({
+              ...sug,
+              target_band: sug.target_band || 8.5
+            });
+          }
+        }
+      }
+
+      // If Gemini suggestions didn't extract enough real phrases, add from linguistic engine
+      if (validSuggestions.length < 3 && linguisticAnalysis.suggestions) {
+        for (const sug of linguisticAnalysis.suggestions) {
+          if (!validSuggestions.some(v => v.original_phrase.toLowerCase() === sug.original_phrase.toLowerCase())) {
+            validSuggestions.push(sug);
+          }
+          if (validSuggestions.length >= 4) break;
+        }
+      }
+
+      parsed.suggestions = validSuggestions.length > 0 ? validSuggestions : linguisticAnalysis.suggestions;
+
+      // Merge linguistic error checks
+      if (linguisticAnalysis.errors && linguisticAnalysis.errors.length > 0) {
+        const combinedErrors = Array.isArray(parsed.errors) ? [...parsed.errors] : [];
+        for (const lErr of linguisticAnalysis.errors) {
+          if (!combinedErrors.some(e => (e.original_text || '').toLowerCase() === lErr.original_text.toLowerCase())) {
+            combinedErrors.push(lErr);
+          }
+        }
+        parsed.errors = combinedErrors;
+      }
+
+      return parsed;
+    }
+  } catch (firstErr: any) {
+    const isQuota = firstErr?.message?.includes('429') || firstErr?.status === 429 || firstErr?.message?.includes('RESOURCE_EXHAUSTED') || firstErr?.message?.includes('prepayment');
+    if (!isQuota) {
+      console.warn("Primary speaking grading attempt failed, retrying text-only:", firstErr?.message || firstErr);
+    }
+  }
+
+  // Attempt 2: Text-only retry (guaranteed reliable)
+  try {
+    const textRetryResponse = await ai.models.generateContent({
+      model: "gemini-3.7-flash",
+      contents: promptText,
+      config: {
+        systemInstruction,
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            overall_band: { type: Type.NUMBER },
+            criteria: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  name: { type: Type.STRING },
+                  score: { type: Type.NUMBER },
+                  comment: { type: Type.STRING }
+                },
+                required: ["name", "score", "comment"]
+              }
+            },
+            general_feedback: { type: Type.STRING },
+            errors: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  error_tag_code: { type: Type.STRING },
+                  original_text: { type: Type.STRING },
+                  corrected_text: { type: Type.STRING },
+                  explanation: { type: Type.STRING }
+                },
+                required: ["error_tag_code", "original_text", "corrected_text", "explanation"]
+              }
+            },
+            suggestions: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  original_phrase: { type: Type.STRING },
+                  suggested_phrase: { type: Type.STRING },
+                  target_band: { type: Type.NUMBER },
+                  reason: { type: Type.STRING }
+                },
+                required: ["original_phrase", "suggested_phrase", "target_band", "reason"]
+              }
+            }
+          },
+          required: ["overall_band", "criteria", "general_feedback", "errors", "suggestions"]
+        }
+      }
+    });
+
+    const jsonText = textRetryResponse.text || "{}";
+    const parsed = JSON.parse(jsonText);
+    if (parsed.overall_band && parsed.criteria) {
+      const linguisticAnalysis = analyzeIELTSSpeakingComprehensive(part, promptTitle, speakingTranscript, 7.5);
+      const validSuggestions: any[] = [];
+      const cleanTranscriptLower = speakingTranscript.toLowerCase();
+
+      if (Array.isArray(parsed.suggestions)) {
+        for (const sug of parsed.suggestions) {
+          const orig = (sug.original_phrase || '').trim();
+          if (orig && orig.length >= 3 && !orig.startsWith('[') && cleanTranscriptLower.includes(orig.toLowerCase())) {
+            validSuggestions.push({
+              ...sug,
+              target_band: sug.target_band || 8.5
+            });
+          }
+        }
+      }
+
+      if (validSuggestions.length < 3 && linguisticAnalysis.suggestions) {
+        for (const sug of linguisticAnalysis.suggestions) {
+          if (!validSuggestions.some(v => v.original_phrase.toLowerCase() === sug.original_phrase.toLowerCase())) {
+            validSuggestions.push(sug);
+          }
+          if (validSuggestions.length >= 4) break;
+        }
+      }
+
+      parsed.suggestions = validSuggestions.length > 0 ? validSuggestions : linguisticAnalysis.suggestions;
+      return parsed;
+    }
+  } catch (secondErr: any) {
+    const isQuota = secondErr?.message?.includes('429') || secondErr?.status === 429 || secondErr?.message?.includes('RESOURCE_EXHAUSTED') || secondErr?.message?.includes('prepayment');
+    if (isQuota) {
+      console.warn("Gemini Speaking Grading quota exhausted (429). Using Speaking Linguistic Engine for authentic assessment.");
+    } else {
+      console.warn("Text retry speaking grading notice, falling back to linguistic engine:", secondErr?.message || secondErr);
+    }
+  }
+
+  // Pure dynamic fallback strictly grounded in candidate words without fake examples
+  return analyzeIELTSSpeakingComprehensive(part, promptTitle, speakingTranscript, 7.5);
+}
+
+export async function transcribeSpeakingAudio(
+  audioBase64: string,
+  mimeType: string = 'audio/webm',
+  contextPrompt?: string
+): Promise<{
+  transcript: string;
+  word_count: number;
+  detected_language: string;
+  confidence: number;
+}> {
+  if (!audioBase64) {
     return {
-      overall_band: 6.5,
-      criteria: [
-        { name: "Fluency and Coherence", score: 6.5, comment: "Nói trôi chảy, độ ngập ngừng chấp nhận được khi tìm ý tưởng." },
-        { name: "Lexical Resource", score: 6.5, comment: "Sử dụng từ vựng linh hoạt liên quan đến chủ đề." },
-        { name: "Grammatical Range and Accuracy", score: 6.0, comment: "Có sự đa dạng cấu trúc nhưng còn lỗi chia động từ khi nói nhanh." },
-        { name: "Pronunciation", score: 6.5, comment: "Âm phát rõ ràng, cần lưu ý trọng âm các từ ghép và nối âm tự nhiên." }
-      ],
-      general_feedback: "Bài nói có phản xạ khá tự nhiên. Hãy tập trung cải thiện ngữ điệu (intonation) và nhấn trọng âm từ chính xác.",
-      errors: [
-        { error_tag_code: "pronunciation_stress", original_text: "en-VI-ron-ment", corrected_text: "/ɪnˈvaɪ.rən.mənt/", explanation: "Nhấn trọng âm ở âm tiết thứ 2 (enVIronment)." }
-      ],
-      suggestions: [
-        { original_phrase: "I like traveling very much", suggested_phrase: "I have a keen passion for exploring new horizons", target_band: 7.5, reason: "Nâng cấp từ vựng chỉ sở thích cho Speaking Part 1 & 2." }
-      ]
+      transcript: '',
+      word_count: 0,
+      detected_language: 'en',
+      confidence: 0
     };
+  }
+
+  const cleanMime = normalizeAudioMimeType(mimeType);
+
+  const systemInstruction = `
+You are an expert, highly accurate Speech-to-Text and Audio Transcription AI specialized in IELTS Speaking tests.
+Your job is to listen to the provided candidate audio recording and transcribe every spoken word precisely in English.
+
+Transcription Guidelines:
+1. Accurately transcribe what the candidate actually said in English.
+2. Maintain natural punctuation (commas, periods, question marks, capital letters).
+3. If there are hesitation fillers or self-corrections (e.g., "uh", "um", "like", "I mean"), transcribe them accurately as spoken so the IELTS examiner can evaluate fluency.
+4. If candidate spoke in Vietnamese or mixed language, transcribe what they said and note detected language.
+5. If the audio is completely silent or only background static noise with no spoken words, return an empty transcript "".
+
+Respond strictly in valid JSON matching the schema.
+`;
+
+  const audioPart = {
+    inlineData: {
+      mimeType: cleanMime,
+      data: audioBase64
+    }
+  };
+
+  const textPart = {
+    text: `Please transcribe this IELTS Speaking audio recording accurately.${contextPrompt ? ` Exam context / topic: "${contextPrompt}".` : ''}`
+  };
+
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-3.7-flash",
+      contents: { parts: [audioPart, textPart] },
+      config: {
+        systemInstruction,
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            transcript: { type: Type.STRING },
+            detected_language: { type: Type.STRING },
+            clarity_score: { type: Type.NUMBER }
+          },
+          required: ["transcript"]
+        }
+      }
+    });
+
+    let rawText = (response.text || '').trim();
+    let transcript = '';
+    let detectedLang = 'en';
+    let clarity = 0.95;
+
+    try {
+      // Remove any surrounding markdown json fences if present
+      const cleaned = rawText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+      const parsed = JSON.parse(cleaned);
+      transcript = (parsed.transcript || '').trim();
+      detectedLang = parsed.detected_language || 'en';
+      clarity = parsed.clarity_score || 0.95;
+    } catch (parseErr) {
+      // If direct JSON parse fails, check if the raw text is the transcript itself
+      if (rawText && !rawText.startsWith('{')) {
+        transcript = rawText;
+      }
+    }
+
+    const wordCount = transcript ? transcript.split(/\s+/).filter(Boolean).length : 0;
+    return {
+      transcript,
+      word_count: wordCount,
+      detected_language: detectedLang,
+      confidence: clarity
+    };
+  } catch (error: any) {
+    const isQuota = error?.message?.includes('429') || error?.status === 429 || error?.message?.includes('RESOURCE_EXHAUSTED') || error?.message?.includes('prepayment');
+    if (isQuota) {
+      console.warn("Gemini API quota exhausted (429 RESOURCE_EXHAUSTED). Falling back to client-side transcript.");
+      return {
+        transcript: "",
+        word_count: 0,
+        detected_language: "en",
+        confidence: 0
+      };
+    }
+    console.error("Gemini Audio Transcription error:", error);
+    // Secondary fallback with simple prompt if structured call failed
+    try {
+      const simpleRes = await ai.models.generateContent({
+        model: "gemini-3.7-flash",
+        contents: {
+          parts: [
+            audioPart,
+            { text: "Listen to this audio and write down the exact English transcript of what the candidate spoke. Return only the transcript text." }
+          ]
+        },
+        config: {
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW }
+        }
+      });
+      const simpleTranscript = (simpleRes.text || '').trim();
+      const wordCount = simpleTranscript ? simpleTranscript.split(/\s+/).filter(Boolean).length : 0;
+      return {
+        transcript: simpleTranscript,
+        word_count: wordCount,
+        detected_language: "en",
+        confidence: 0.9
+      };
+    } catch (secErr: any) {
+      console.warn("Gemini secondary audio transcription notice:", secErr?.message || secErr);
+      return {
+        transcript: "",
+        word_count: 0,
+        detected_language: "en",
+        confidence: 0
+      };
+    }
   }
 }
 
@@ -713,7 +975,7 @@ Respond in JSON format.
 
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3.6-flash",
+      model: "gemini-3.7-flash",
       contents: prompt,
       config: {
         responseMimeType: "application/json",
@@ -793,7 +1055,7 @@ export async function lookupVocabDetails(word: string) {
 
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3.6-flash",
+      model: "gemini-3.7-flash",
       contents: prompt,
       config: {
         responseMimeType: "application/json",
@@ -869,7 +1131,7 @@ Respond strictly in valid JSON matching the schema.
 
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3.6-flash",
+      model: "gemini-3.7-flash",
       contents: userContents,
       config: {
         systemInstruction,
@@ -996,7 +1258,7 @@ Respond strictly in valid JSON matching the schema.
 
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3.6-flash",
+      model: "gemini-3.7-flash",
       contents: wordsPrompt,
       config: {
         systemInstruction,
@@ -1119,7 +1381,7 @@ Return strictly valid JSON matching the schema.
 
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3.6-flash",
+      model: "gemini-3.7-flash",
       contents: prompt,
       config: {
         systemInstruction,
@@ -1269,7 +1531,7 @@ ${formattedErrors}`;
 
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3.6-flash",
+      model: "gemini-3.7-flash",
       contents: prompt,
       config: {
         systemInstruction,
@@ -1498,7 +1760,7 @@ Trả về kết quả chuẩn định dạng JSON theo schema đã quy định.
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.7-flash',
       contents: promptText,
       config: {
         responseMimeType: 'application/json',

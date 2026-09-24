@@ -392,7 +392,8 @@ export const TestBankView: React.FC<TestBankViewProps> = ({ initialSkill = 'ALL'
         if (isTask1Only || isTask2Only) {
           const taskType = isTask1Only ? 'TASK_1' : 'TASK_2';
           const essayText = isTask1Only ? writingTask1Essay : writingTask2Essay;
-          const prompt = sections[0]?.content_passage || sections[0]?.title;
+          const targetSec = sections[0];
+          const prompt = targetSec?.content_passage || targetSec?.title || (isTask1Only ? 'IELTS Writing Task 1' : 'IELTS Writing Task 2');
 
           const res = await fetch('/api/grading/writing', {
             method: 'POST',
@@ -417,16 +418,19 @@ export const TestBankView: React.FC<TestBankViewProps> = ({ initialSkill = 'ALL'
         } else {
           // Full Dual Task Writing Exam
           const task1Sec = sections.find(s => s.order_index === 1) || sections[0];
-          const task2Sec = sections.find(s => s.order_index === 2) || sections[1];
+          const task2Sec = sections.find(s => s.order_index === 2) || sections[1] || sections[0];
+
+          const task1Prompt = task1Sec?.content_passage || task1Sec?.title || 'IELTS Writing Task 1: Report / Visual Analysis';
+          const task2Prompt = task2Sec?.content_passage || task2Sec?.title || 'IELTS Writing Task 2: Essay / Discussion';
 
           const res = await fetch('/api/grading/writing-full', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               user_id: 'u_student',
-              task1_prompt: task1Sec?.content_passage || 'Archaeological findings 2004 vs 2014',
+              task1_prompt: task1Prompt,
               task1_essay: writingTask1Essay,
-              task2_prompt: task2Sec?.content_passage || 'Hard work in education and employment',
+              task2_prompt: task2Prompt,
               task2_essay: writingTask2Essay,
               target_band: 7.0
             })
@@ -1287,7 +1291,7 @@ export const TestBankView: React.FC<TestBankViewProps> = ({ initialSkill = 'ALL'
                 essayText={submissionResult.task_type === 'TASK_1' ? writingTask1Essay : writingTask2Essay}
                 result={submissionResult.result}
                 taskTitle={sections[0]?.content_passage || sections[0]?.title || 'IELTS Writing Prompt'}
-                taskLabel={submissionResult.task_type === 'TASK_1' ? 'Task 1 (Map Analysis)' : 'Task 2 (Hard Work Essay)'}
+                taskLabel={sections[0]?.title || (submissionResult.task_type === 'TASK_1' ? 'Task 1: Report / Visual Analysis' : 'Task 2: Essay / Discussion')}
               />
             </div>
           )}
@@ -1297,7 +1301,7 @@ export const TestBankView: React.FC<TestBankViewProps> = ({ initialSkill = 'ALL'
             <div className="space-y-4 pt-2">
               <div className="flex items-center justify-between bg-slate-50 p-4 rounded-2xl border border-slate-200">
                 <div>
-                  <h4 className="font-extrabold text-sm text-slate-900">Task 1: Phân Tích Bản Đồ Khảo Cổ Học (2004 vs 2014)</h4>
+                  <h4 className="font-extrabold text-sm text-slate-900">{sections.find(s => s.order_index === 1)?.title || 'Task 1: Báo Cáo / Miêu Tả'}</h4>
                   <p className="text-xs text-slate-500 mt-0.5">Thời gian đề xuất: 20 phút • Tiêu chuẩn 150 từ</p>
                 </div>
                 <div className="text-right">
@@ -1311,8 +1315,8 @@ export const TestBankView: React.FC<TestBankViewProps> = ({ initialSkill = 'ALL'
               <EssayErrorHighlightViewer
                 essayText={writingTask1Essay}
                 result={submissionResult.result.task1_result}
-                taskTitle={sections.find(s => s.order_index === 1)?.content_passage || 'Archaeological findings 2004 vs 2014'}
-                taskLabel="Task 1 (Map Analysis)"
+                taskTitle={sections.find(s => s.order_index === 1)?.content_passage || sections.find(s => s.order_index === 1)?.title || 'IELTS Writing Task 1'}
+                taskLabel={sections.find(s => s.order_index === 1)?.title || "Task 1 (Report/Visual Analysis)"}
               />
             </div>
           )}
@@ -1322,7 +1326,7 @@ export const TestBankView: React.FC<TestBankViewProps> = ({ initialSkill = 'ALL'
             <div className="space-y-4 pt-2">
               <div className="flex items-center justify-between bg-slate-50 p-4 rounded-2xl border border-slate-200">
                 <div>
-                  <h4 className="font-extrabold text-sm text-slate-900">Task 2: Nghị Luận Xã Hội (Hard Work in Education & Employment)</h4>
+                  <h4 className="font-extrabold text-sm text-slate-900">{sections.find(s => s.order_index === 2)?.title || 'Task 2: Nghị Luận Xã Hội'}</h4>
                   <p className="text-xs text-slate-500 mt-0.5">Thời gian đề xuất: 40 phút • Tiêu chuẩn 250 từ</p>
                 </div>
                 <div className="text-right">
@@ -1336,8 +1340,8 @@ export const TestBankView: React.FC<TestBankViewProps> = ({ initialSkill = 'ALL'
               <EssayErrorHighlightViewer
                 essayText={writingTask2Essay}
                 result={submissionResult.result.task2_result}
-                taskTitle={sections.find(s => s.order_index === 2)?.content_passage || 'Hard work in education and employment'}
-                taskLabel="Task 2 (Hard Work Essay)"
+                taskTitle={sections.find(s => s.order_index === 2)?.content_passage || sections.find(s => s.order_index === 2)?.title || 'IELTS Writing Task 2'}
+                taskLabel={sections.find(s => s.order_index === 2)?.title || "Task 2 (Essay/Discussion)"}
               />
             </div>
           )}

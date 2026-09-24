@@ -5,7 +5,7 @@ import multer from 'multer';
 import { createServer as createViteServer } from 'vite';
 import { getDb, saveDb, calculateRealUserStreak, recordUserActivity, rewardUserCoins, calculateCoinsForReadingListening, calculateCoinsForWritingSpeaking, calculateCoinsForRemedialTest, getRewardItemsCatalog, redeemRewardItem, getUserRedeemedVouchers } from './server/db.js';
 import { IELTS_LISTENING_TEST_1 } from './server/listeningTestData.js';
-import { gradeWritingEssay, gradeFullWritingExam, gradeSpeakingResponse, generateBrainstormIdeas, lookupVocabDetails, generateFullStudySchedule, generateQuizizzQuestions, generateQuizizzFromFile, generateRemedialExamFromErrors, generateSkillDiagnosticAssessment } from './server/geminiService.js';
+import { gradeWritingEssay, gradeFullWritingExam, gradeSpeakingResponse, transcribeSpeakingAudio, generateBrainstormIdeas, lookupVocabDetails, generateFullStudySchedule, generateQuizizzQuestions, generateQuizizzFromFile, generateRemedialExamFromErrors, generateSkillDiagnosticAssessment } from './server/geminiService.js';
 
 const upload = multer({ limits: { fileSize: 10 * 1024 * 1024 } }); // 10MB limit
 
@@ -26,180 +26,6 @@ async function startServer() {
   // ===================== API ROUTES =====================
 
   // 1. Authentication & User Registration / Login
-  app.post('/api/auth/register', async (req, res) => {
-    const { full_name, email, password, current_band, target_band, target_exam_date, weekly_hours } = req.body;
-    try {
-      if (!email || !email.trim()) {
-        return res.status(400).json({ error: 'Vui lòng cung cấp địa chỉ Email hợp lệ.' });
-      }
-      if (!full_name || !full_name.trim()) {
-        return res.status(400).json({ error: 'Vui lòng cung cấp Họ và Tên của bạn.' });
-      }
-      if (!password || password.length < 6) {
-        return res.status(400).json({ error: 'Mật khẩu cần tối thiểu 6 ký tự.' });
-      }
-
-      const cleanEmail = email.trim().toLowerCase();
-
-      // Check if email already exists
-      const checkStmt = db.prepare("SELECT * FROM users WHERE LOWER(email) = ?");
-      checkStmt.bind([cleanEmail]);
-      let existing = null;
-      if (checkStmt.step()) {
-        existing = checkStmt.getAsObject();
-      }
-      checkStmt.free();
-
-      if (existing) {
-        return res.status(400).json({ error: 'Địa chỉ Email này đã được đăng ký. Vui lòng chuyển sang tab Đăng Nhập.' });
-      }
-
-      // Create new user
-      const id = genId('u');
-      const curBand = current_band !== undefined ? Number(current_band) : 5.5;
-      const tarBand = target_band !== undefined ? Number(target_band) : 7.0;
-      const examDate = target_exam_date || '2026-11-15';
-      const hours = weekly_hours !== undefined ? Number(weekly_hours) : 10;
-
-      db.run("INSERT INTO users (id, email, password_hash, full_name, role) VALUES (?, ?, ?, ?, 'STUDENT')",
-        [id, cleanEmail, password, full_name.trim()]);
-      
-      db.run(`
-        INSERT INTO user_profiles (user_id, current_band, target_band, target_exam_date, weekly_hours, updated_at)
-        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-      `, [id, curBand, tarBand, examDate, hours]);
-
-      db.run("INSERT INTO streaks (user_id, current_streak, best_streak, last_active_date) VALUES (?, 1, 1, date('now'))", [id]);
-      db.run("INSERT INTO wallets (user_id, credits) VALUES (?, 50)", [id]);
-
-      // Add Welcome Bonus Transaction (+50 Xu)
-      db.run(`
-        INSERT INTO coin_transactions (id, user_id, amount, base_amount, bonus_amount, balance_after, reason, source_type, created_at)
-        VALUES (?, ?, 50, 50, 0, 50, 'Tặng Xu chào mừng tân học viên & kích hoạt tài khoản AI', 'WELCOME_BONUS', CURRENT_TIMESTAMP)
-      `, [genId('tx'), id]);
-
-      saveDb();
-
-      const user = { id, email: cleanEmail, full_name: full_name.trim(), role: 'STUDENT' };
-      const profile = { user_id: id, current_band: curBand, target_band: tarBand, target_exam_date: examDate, weekly_hours: hours };
-
-      res.json({
-        success: true,
-        user,
-        profile,
-        message: 'Đăng ký tài khoản thành công! Tặng bạn 50 Xu chào mừng.'
-      });
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  // In-memory OTP storage for password recovery
-  const otpStore = new Map<string, { code: string; expiresAt: number }>();
-
-  // Forgot password - Send OTP verification code
-  app.post('/api/auth/forgot-password', async (req, res) => {
-    const { email } = req.body;
-    try {
-      const cleanEmail = (email || '').trim().toLowerCase();
-      if (!cleanEmail || !cleanEmail.includes('@')) {
-        return res.status(400).json({ error: 'Vui lòng nhập địa chỉ Email hợp lệ.' });
-      }
-
-      const stmt = db.prepare("SELECT * FROM users WHERE LOWER(email) = ?");
-      stmt.bind([cleanEmail]);
-      let user: any = null;
-      if (stmt.step()) {
-        user = stmt.getAsObject();
-      }
-      stmt.free();
-
-      // If user is not found in database, check demo accounts or create placeholder
-      if (!user) {
-        if (cleanEmail === 'tranquynhanh28032016@gmail.com' || cleanEmail === 'student@ielts.vn') {
-          user = { id: 'u_student', email: cleanEmail, full_name: 'Trần Quỳnh Anh' };
-        } else {
-          return res.status(404).json({
-            error: 'Không tìm thấy tài khoản với email này. Vui lòng kiểm tra lại hoặc chuyển sang tab Đăng Ký.'
-          });
-        }
-      }
-
-      // Generate 6-digit OTP
-      const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
-      // Store OTP with 15 minutes expiration
-      otpStore.set(cleanEmail, {
-        code: otpCode,
-        expiresAt: Date.now() + 15 * 60 * 1000
-      });
-
-      res.json({
-        success: true,
-        message: `Mã OTP khôi phục mật khẩu đã được tạo cho email ${cleanEmail}.`,
-        otp_preview: otpCode, // Provided for instant seamless verification
-        full_name: user.full_name || 'Học viên'
-      });
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  // Reset password - Verify OTP and set new password
-  app.post('/api/auth/reset-password', async (req, res) => {
-    const { email, otp, new_password } = req.body;
-    try {
-      const cleanEmail = (email || '').trim().toLowerCase();
-      if (!cleanEmail) {
-        return res.status(400).json({ error: 'Vui lòng nhập địa chỉ Email.' });
-      }
-      if (!otp || !otp.trim()) {
-        return res.status(400).json({ error: 'Vui lòng nhập mã xác thực OTP 6 số.' });
-      }
-      if (!new_password || new_password.length < 6) {
-        return res.status(400).json({ error: 'Mật khẩu mới cần tối thiểu 6 ký tự.' });
-      }
-
-      // Verify OTP
-      const storedOtp = otpStore.get(cleanEmail);
-      const isDevOtpValid = otp.trim() === '123456' || otp.trim() === '888888';
-      const isActualOtpValid = storedOtp && storedOtp.code === otp.trim() && storedOtp.expiresAt > Date.now();
-
-      if (!isActualOtpValid && !isDevOtpValid) {
-        return res.status(400).json({ error: 'Mã xác thực OTP không chính xác hoặc đã hết hạn. Vui lòng lấy lại mã mới.' });
-      }
-
-      // Check if user exists in DB
-      const stmt = db.prepare("SELECT * FROM users WHERE LOWER(email) = ?");
-      stmt.bind([cleanEmail]);
-      let user: any = null;
-      if (stmt.step()) {
-        user = stmt.getAsObject();
-      }
-      stmt.free();
-
-      if (!user) {
-        // Create user if was standard demo
-        const newId = cleanEmail.includes('quynhanh') ? 'u_student' : genId('u');
-        db.run("INSERT INTO users (id, email, password_hash, full_name, role) VALUES (?, ?, ?, 'Trần Quỳnh Anh', 'STUDENT')",
-          [newId, cleanEmail, new_password]);
-      } else {
-        // Update user password in database
-        db.run("UPDATE users SET password_hash = ? WHERE LOWER(email) = ?", [new_password, cleanEmail]);
-      }
-
-      // Clear OTP
-      otpStore.delete(cleanEmail);
-      saveDb();
-
-      res.json({
-        success: true,
-        message: '🎉 Đặt lại mật khẩu thành công! Bạn có thể đăng nhập ngay bằng mật khẩu mới.'
-      });
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
   // POST /api/auth/register - Register new student account with +50 Coins welcome reward
   app.post('/api/auth/register', async (req, res) => {
     const { full_name, email, password, current_band, target_band, target_exam_date, weekly_hours } = req.body;
@@ -1108,23 +934,75 @@ async function startServer() {
     }
   });
 
-  // 4. AI Speaking Grading
+  // 4a. AI Speaking Audio Speech-to-Text Transcription
+  app.post('/api/speaking/transcribe', upload.single('audio'), async (req, res) => {
+    try {
+      let audioBase64 = '';
+      let mimeType = 'audio/webm';
+      let contextPrompt = req.body.context_prompt || req.body.prompt_title || '';
+
+      if (req.file) {
+        audioBase64 = req.file.buffer.toString('base64');
+        mimeType = req.file.mimetype || 'audio/webm';
+      } else if (req.body.audio_base64) {
+        audioBase64 = req.body.audio_base64;
+        mimeType = req.body.mime_type || 'audio/webm';
+      }
+
+      if (!audioBase64) {
+        return res.status(400).json({ error: 'Không tìm thấy dữ liệu âm thanh giọng nói để trích xuất.' });
+      }
+
+      const transcriptionResult = await transcribeSpeakingAudio(audioBase64, mimeType, contextPrompt);
+      res.json(transcriptionResult);
+    } catch (err: any) {
+      console.error('Speaking transcription error:', err);
+      res.status(500).json({ error: err.message || 'Lỗi khi trích xuất giọng nói qua AI' });
+    }
+  });
+
+  // 4b. AI Speaking Grading
   app.post('/api/grading/speaking', upload.single('audio'), async (req, res) => {
-    const { user_id, part, prompt_title, transcript } = req.body;
+    const { user_id, part, prompt_title, transcript, audio_base64, mime_type } = req.body;
 
     try {
+      let audioBase64 = audio_base64 || '';
+      let audioMimeType = mime_type || 'audio/webm';
+
+      if (req.file) {
+        audioBase64 = req.file.buffer.toString('base64');
+        audioMimeType = req.file.mimetype || 'audio/webm';
+      }
+
+      let speakingTranscript = (transcript || '').trim();
+
+      // If transcript is empty but audio is provided, automatically transcribe it with Gemini AI
+      if (!speakingTranscript && audioBase64) {
+        try {
+          const autoTrans = await transcribeSpeakingAudio(audioBase64, audioMimeType, prompt_title);
+          speakingTranscript = autoTrans.transcript || '';
+        } catch (transErr) {
+          console.warn('Auto transcription fallback failed:', transErr);
+        }
+      }
+
+      if (!speakingTranscript && !audioBase64) {
+        speakingTranscript = '[Chưa ghi nhận nội dung câu trả lời từ thí sinh]';
+      }
+
       const subId = genId('sub_s');
-      const speakingTranscript = transcript || 'Candidate spoke about their personal experience...';
 
       db.run(`
         INSERT INTO speaking_submissions (id, user_id, part, prompt_title, transcript)
         VALUES (?, ?, ?, ?, ?)
-      `, [subId, user_id || 'u_student', part || 'PART_2', prompt_title || 'Describe a trip', speakingTranscript]);
+      `, [subId, user_id || 'u_student', part || 'PART_1', prompt_title || 'IELTS Speaking Topic', speakingTranscript || '[Ghi âm giọng nói]']);
 
       const aiResult = await gradeSpeakingResponse(
-        part || 'PART_2',
-        prompt_title || 'Speaking Topic',
-        speakingTranscript
+        part || 'PART_1',
+        prompt_title || 'IELTS Speaking Topic',
+        speakingTranscript,
+        audioBase64 || undefined,
+        audioMimeType
       );
 
       const gradingId = genId('gr_s');
@@ -1167,10 +1045,12 @@ async function startServer() {
 
       res.json({
         submission_id: subId,
+        transcript: speakingTranscript,
         result: aiResult,
         earned_coins: coinReward
       });
     } catch (err: any) {
+      console.error('Speaking Grading Error:', err);
       res.status(500).json({ error: err.message });
     }
   });
